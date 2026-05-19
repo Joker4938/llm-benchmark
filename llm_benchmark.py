@@ -129,15 +129,19 @@ async def make_request(client, model, output_tokens, request_timeout, use_long_c
         content = random.choice(SHORT_PROMPTS)
 
     try:
-        stream = await client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "user", "content": content}
-            ],
-            max_tokens=output_tokens,
-            stream=True
-        )
-        first_token_time, total_tokens = await asyncio.wait_for(process_stream(stream), timeout=request_timeout)
+        async def _do_req():
+            stream = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "user", "content": content}
+                ],
+                max_tokens=output_tokens,
+                stream=True,
+                timeout=request_timeout
+            )
+            return await process_stream(stream)
+            
+        first_token_time, total_tokens = await asyncio.wait_for(_do_req(), timeout=request_timeout)
         
         end_time = time.time()
         elapsed_time = end_time - start_time
@@ -152,7 +156,7 @@ async def make_request(client, model, output_tokens, request_timeout, use_long_c
         logging.error(f"Error during request: {str(e)}")
         return None
 
-async def worker(client, semaphore, queue, results, model, output_tokens, request_timeout, use_long_context):
+async def worker(client, semaphore, queue, results, model, output_tokens, request_timeout, use_long_context, completed_counter=None, progress_callback=None, total_requests=0):
     while True:
         async with semaphore:
             task_id = await queue.get()
@@ -167,6 +171,15 @@ async def worker(client, semaphore, queue, results, model, output_tokens, reques
                 logging.warning(f"Request {task_id} failed")
             queue.task_done()
             logging.info(f"Finished request {task_id}")
+            if completed_counter is not None:
+                completed_counter[0] += 1
+                if progress_callback:
+                    try:
+                        progress_callback(completed_counter[0], total_requests)
+                    except Exception as e:
+                        logging.error(f"Error in progress callback: {str(e)}")
+
+import httpx
 
 def calculate_percentile(values, percentile, reverse=False):
     if not values:
@@ -175,11 +188,16 @@ def calculate_percentile(values, percentile, reverse=False):
         return np.percentile(values, 100 - percentile)
     return np.percentile(values, percentile)
 
-async def run_benchmark(num_requests, concurrency, request_timeout, output_tokens, llm_url, api_key, model, use_long_context):
-    client = AsyncOpenAI(base_url=llm_url, api_key=api_key)
+async def run_benchmark(num_requests, concurrency, request_timeout, output_tokens, llm_url, api_key, model, use_long_context, progress_callback=None):
+    # Configure HTTP client to handle high concurrency without connection pooling bottlenecks
+    limits = httpx.Limits(max_connections=concurrency + 100, max_keepalive_connections=concurrency + 100)
+    http_client = httpx.AsyncClient(limits=limits)
+    
+    client = AsyncOpenAI(base_url=llm_url, api_key=api_key, http_client=http_client)
     semaphore = asyncio.Semaphore(concurrency)
     queue = asyncio.Queue()
     results = []
+    completed_counter = [0]
 
     # Add tasks to the queue
     for i in range(num_requests):
@@ -190,7 +208,10 @@ async def run_benchmark(num_requests, concurrency, request_timeout, output_token
         await queue.put(None)
 
     # Create worker tasks
-    workers = [asyncio.create_task(worker(client, semaphore, queue, results, model, output_tokens, request_timeout, use_long_context)) for _ in range(concurrency)]
+    workers = [asyncio.create_task(worker(
+        client, semaphore, queue, results, model, output_tokens, request_timeout, use_long_context,
+        completed_counter=completed_counter, progress_callback=progress_callback, total_requests=num_requests
+    )) for _ in range(concurrency)]
 
     start_time = time.time()
     

@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  llm-benchmark-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: llm-benchmark:latest
+    container_name: llm-benchmark-ui
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./output:/app/output
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
+      - TZ=Asia/Shanghai
+    command: ["streamlit", "run", "webui.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    restart: unless-stopped
