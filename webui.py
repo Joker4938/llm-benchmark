@@ -1,6 +1,9 @@
 import streamlit as st
 import asyncio
 import time
+import io
+import json
+from datetime import datetime
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -237,6 +240,10 @@ def display_aggregated_results(results_list):
         fig_lat.update_traces(line_color='#d62728')
         st.plotly_chart(fig_lat, use_container_width=True)
 
+    # Export section for gradient results
+    st.markdown("---")
+    render_export_section(df, prefix="gradient_benchmark")
+
 def run_benchmark_ui(num_requests, concurrency, request_timeout, output_tokens, llm_url, api_key, model, use_long_context):
     st.markdown("---")
     st.subheader("🏃‍♂️ 压测进行中...")
@@ -273,6 +280,66 @@ def run_benchmark_ui(num_requests, concurrency, request_timeout, output_tokens, 
         
     except Exception as e:
         st.error(f"❌ 压测执行过程中发生错误: {str(e)}")
+
+def build_single_export_df(results):
+    """把单次压测结果展平为 DataFrame"""
+    rows = [
+        {"指标分类": "基本信息", "指标名称": "模型", "值": results.get('model', '-')},
+        {"指标分类": "基本信息", "指标名称": "并发数", "值": results['concurrency']},
+        {"指标分类": "基本信息", "指标名称": "总请求数", "值": results['total_requests']},
+        {"指标分类": "基本信息", "指标名称": "成功请求数", "值": results['successful_requests']},
+        {"指标分类": "基本信息", "指标名称": "成功率 (%)", "值": round(results['successful_requests'] / results['total_requests'] * 100, 2)},
+        {"指标分类": "基本信息", "指标名称": "总耗时 (秒)", "值": round(results['total_time'], 3)},
+        {"指标分类": "基本信息", "指标名称": "累计输出 Token", "值": results['total_output_tokens']},
+        {"指标分类": "吞吐性能", "指标名称": "RPS (每秒请求数)", "值": round(results['requests_per_second'], 4)},
+        {"指标分类": "吞吐性能", "指标名称": "TPS 平均 (Token/秒)", "值": round(results['tokens_per_second']['average'], 4)},
+        {"指标分类": "吞吐性能", "指标名称": "TPS P50", "值": round(results['tokens_per_second']['p50'], 4)},
+        {"指标分类": "吞吐性能", "指标名称": "TPS P95", "值": round(results['tokens_per_second']['p95'], 4)},
+        {"指标分类": "吞吐性能", "指标名称": "TPS P99", "值": round(results['tokens_per_second']['p99'], 4)},
+        {"指标分类": "响应延迟", "指标名称": "平均延迟 (秒)", "值": round(results['latency']['average'], 4)},
+        {"指标分类": "响应延迟", "指标名称": "延迟 P50 (秒)", "值": round(results['latency']['p50'], 4)},
+        {"指标分类": "响应延迟", "指标名称": "延迟 P95 (秒)", "值": round(results['latency']['p95'], 4)},
+        {"指标分类": "响应延迟", "指标名称": "延迟 P99 (秒)", "值": round(results['latency']['p99'], 4)},
+        {"指标分类": "首字延迟 (TTFT)", "指标名称": "TTFT 平均 (秒)", "值": round(results['time_to_first_token']['average'], 4)},
+        {"指标分类": "首字延迟 (TTFT)", "指标名称": "TTFT P50 (秒)", "值": round(results['time_to_first_token']['p50'], 4)},
+        {"指标分类": "首字延迟 (TTFT)", "指标名称": "TTFT P95 (秒)", "值": round(results['time_to_first_token']['p95'], 4)},
+        {"指标分类": "首字延迟 (TTFT)", "指标名称": "TTFT P99 (秒)", "值": round(results['time_to_first_token']['p99'], 4)},
+    ]
+    return pd.DataFrame(rows)
+
+def build_export_bytes(df, fmt):
+    """返回 (bytes, mime, suffix)"""
+    if fmt == "CSV":
+        buf = io.BytesIO()
+        df.to_csv(buf, index=False, encoding="utf-8-sig")  # utf-8-sig 让 Excel 正确显示中文
+        return buf.getvalue(), "text/csv", "csv"
+    else:  # Excel
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="压测结果")
+        return buf.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"
+
+def render_export_section(df, prefix="benchmark"):
+    """渲染导出区域（格式选择 + 下载按钮），可复用于单次和梯度压测"""
+    st.markdown("### 📥 导出测试结果")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    col_fmt, col_btn = st.columns([1, 3])
+    with col_fmt:
+        fmt = st.selectbox("导出格式", ["Excel (.xlsx)", "CSV (.csv)"], key=f"export_fmt_{prefix}_{ts}")
+    fmt_key = "Excel" if "Excel" in fmt else "CSV"
+    file_bytes, mime, suffix = build_export_bytes(df, fmt_key)
+    filename = f"{prefix}_{ts}.{suffix}"
+    with col_btn:
+        st.markdown("<div style='margin-top:28px'>", unsafe_allow_html=True)
+        st.download_button(
+            label=f"⬇️ 下载 {fmt}",
+            data=file_bytes,
+            file_name=filename,
+            mime=mime,
+            use_container_width=True,
+            key=f"dl_{prefix}_{ts}"
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
 
 def display_results(results):
     st.markdown("---")
@@ -385,10 +452,15 @@ def display_results(results):
         )
         st.plotly_chart(fig_tps, use_container_width=True)
 
-    # Allow downloading raw json
+    # Raw JSON expander
     st.markdown("<br>", unsafe_allow_html=True)
     with st.expander("📂 显示原始压测结果 JSON 数据"):
         st.json(results)
+
+    # 5. Export section
+    st.markdown("---")
+    export_df = build_single_export_df(results)
+    render_export_section(export_df, prefix="single_benchmark")
 
 if __name__ == "__main__":
     main()
