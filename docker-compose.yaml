@@ -7,8 +7,7 @@ services:
       dockerfile: Dockerfile
     image: llm-benchmark:latest
     container_name: llm-benchmark-ui
-    ports:
-      - "8501:8501"
+    network_mode: "host"
     volumes:
       - ./output:/app/output
     environment:
