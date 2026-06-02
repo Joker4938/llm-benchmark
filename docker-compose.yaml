@@ -1,18 +1,21 @@
 version: '3.8'
 
 services:
-  llm-benchmark-ui:
+  llm-benchmark:
     build:
       context: .
       dockerfile: Dockerfile
     image: llm-benchmark:latest
-    container_name: llm-benchmark-ui
-    network_mode: "host"
+    container_name: llm-benchmark
+    ports:
+      - "5000:5000"
     volumes:
-      - ./output:/app/output
+      - ./reports:/app/reports
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app
       - TZ=Asia/Shanghai
-    command: ["streamlit", "run", "webui.py", "--server.port=8501", "--server.address=0.0.0.0"]
+      - BENCH_USER=admin
+      - BENCH_PASS=admin
+      - JWT_SECRET_KEY=change-me-in-production
     restart: unless-stopped

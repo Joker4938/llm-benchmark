@@ -111,14 +111,32 @@ LONG_PROMPT_PAIRS = [
 async def process_stream(stream):
     first_token_time = None
     total_tokens = 0
+    usage_tokens = None
     async for chunk in stream:
-        if first_token_time is None:
-            first_token_time = time.time()
-        if chunk.choices[0].delta.content or getattr(chunk.choices[0].delta, "reasoning_content", None):
+        if not chunk.choices:
+            # Usage-only chunk (when stream_options includes usage)
+            if hasattr(chunk, 'usage') and chunk.usage:
+                usage_tokens = getattr(chunk.usage, 'completion_tokens', None)
+            continue
+        delta = chunk.choices[0].delta
+        # Check for actual content (skip empty strings from init chunks)
+        has_content = bool(delta.content and delta.content.strip())
+        # Different APIs use different field names: DeepSeek uses reasoning_content, Qwen uses reasoning
+        if not has_content:
+            for field in ('reasoning_content', 'reasoning'):
+                val = getattr(delta, field, None)
+                if val and val.strip():
+                    has_content = True
+                    break
+        if has_content:
+            if first_token_time is None:
+                first_token_time = time.time()
             total_tokens += 1
         if chunk.choices[0].finish_reason is not None:
             break
-    return first_token_time, total_tokens
+    # Prefer API-reported token count over chunk counting
+    final_tokens = usage_tokens if usage_tokens is not None else total_tokens
+    return first_token_time, final_tokens
 
 async def make_request(client, model, output_tokens, request_timeout, use_long_context):
     start_time = time.time()
@@ -137,6 +155,7 @@ async def make_request(client, model, output_tokens, request_timeout, use_long_c
                 ],
                 max_tokens=output_tokens,
                 stream=True,
+                stream_options={"include_usage": True},
                 timeout=request_timeout
             )
             return await process_stream(stream)
@@ -185,8 +204,8 @@ def calculate_percentile(values, percentile, reverse=False):
     if not values:
         return None
     if reverse:
-        return np.percentile(values, 100 - percentile)
-    return np.percentile(values, percentile)
+        return float(np.percentile(values, 100 - percentile))
+    return float(np.percentile(values, percentile))
 
 async def run_benchmark(num_requests, concurrency, request_timeout, output_tokens, llm_url, api_key, model, use_long_context, progress_callback=None):
     # Configure HTTP client to handle high concurrency without connection pooling bottlenecks
@@ -281,6 +300,9 @@ def print_results(results, output_format="both"):
         print(json.dumps(results, indent=2))
     
     if output_format in ['line', 'both']:
+        def fmt(val, decimals=3):
+            return f"{val:.{decimals}f}" if val is not None else "N/A"
+
         print("\n基本信息:")
         print(f"总请求数: {results['total_requests']} 个")
         print(f"成功请求数: {results['successful_requests']} 个")
@@ -288,28 +310,28 @@ def print_results(results, output_format="both"):
         print(f"请求超时: {results['request_timeout']} 秒")
         print(f"最大输出token数: {results['max_output_tokens']}")
         print(f"是否使用长文本: {'是' if results['use_long_context'] else '否'}")
-        print(f"总运行时间: {results['total_time']:.2f} 秒")
-        print(f"每秒请求数 (RPS): {results['requests_per_second']:.2f}")
+        print(f"总运行时间: {fmt(results['total_time'], 2)} 秒")
+        print(f"每秒请求数 (RPS): {fmt(results['requests_per_second'], 2)}")
         print(f"总输出token数: {results['total_output_tokens']}")
         print(f"模型名称: {results['model']}")
-        
+
         print("\n延迟统计 (单位: 秒):")
-        print(f"平均延迟: {results['latency']['average']:.3f}")
-        print(f"延迟 P50: {results['latency']['p50']:.3f}")
-        print(f"延迟 P95: {results['latency']['p95']:.3f}")
-        print(f"延迟 P99: {results['latency']['p99']:.3f}")
-        
+        print(f"平均延迟: {fmt(results['latency']['average'])}")
+        print(f"延迟 P50: {fmt(results['latency']['p50'])}")
+        print(f"延迟 P95: {fmt(results['latency']['p95'])}")
+        print(f"延迟 P99: {fmt(results['latency']['p99'])}")
+
         print("\nToken生成速度 (tokens/sec):")
-        print(f"平均速度: {results['tokens_per_second']['average']:.2f}")
-        print(f"速度 P50: {results['tokens_per_second']['p50']:.2f}")
-        print(f"速度 P95: {results['tokens_per_second']['p95']:.2f}")
-        print(f"速度 P99: {results['tokens_per_second']['p99']:.2f}")
-        
+        print(f"平均速度: {fmt(results['tokens_per_second']['average'], 2)}")
+        print(f"速度 P50: {fmt(results['tokens_per_second']['p50'], 2)}")
+        print(f"速度 P95: {fmt(results['tokens_per_second']['p95'], 2)}")
+        print(f"速度 P99: {fmt(results['tokens_per_second']['p99'], 2)}")
+
         print("\n首token响应时间 (单位: 秒):")
-        print(f"平均时间: {results['time_to_first_token']['average']:.3f}")
-        print(f"TTFT P50: {results['time_to_first_token']['p50']:.3f}")
-        print(f"TTFT P95: {results['time_to_first_token']['p95']:.3f}")
-        print(f"TTFT P99: {results['time_to_first_token']['p99']:.3f}")
+        print(f"平均时间: {fmt(results['time_to_first_token']['average'])}")
+        print(f"TTFT P50: {fmt(results['time_to_first_token']['p50'])}")
+        print(f"TTFT P95: {fmt(results['time_to_first_token']['p95'])}")
+        print(f"TTFT P99: {fmt(results['time_to_first_token']['p99'])}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Benchmark ai model with LLM")

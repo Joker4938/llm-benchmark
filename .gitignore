@@ -175,3 +175,16 @@ output/
 benchmark_result*.json
 
 .idea/
+
+# Vue frontend
+frontend/node_modules/
+frontend/dist/
+
+# Flask backend
+backend/__pycache__/
+backend/*.pyc
+backend/instance/
+backend/.webassets-cache
+
+# Reports
+reports/
