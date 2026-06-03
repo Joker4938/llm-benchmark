@@ -20,6 +20,31 @@ from llm_benchmark import run_benchmark
 REPORTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'reports')
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
+CONFIGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'api_configs.json')
+configs_lock = threading.Lock()
+
+
+def _load_configs():
+    """Load configs from JSON file, thread-safe. Returns list of configs."""
+    with configs_lock:
+        if not os.path.exists(CONFIGS_FILE):
+            return []
+        with open(CONFIGS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+
+def _save_configs(configs):
+    """Save configs to JSON file, thread-safe."""
+    with configs_lock:
+        with open(CONFIGS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(configs, f, ensure_ascii=False, indent=2)
+
+
+def _generate_config_id():
+    """Generate a unique config ID."""
+    import uuid
+    return uuid.uuid4().hex[:12]
+
 # Single user credentials from env
 ADMIN_USERNAME = os.environ.get('BENCH_USER', 'admin')
 ADMIN_PASSWORD = os.environ.get('BENCH_PASS', 'admin')
@@ -267,6 +292,131 @@ def create_app():
             return jsonify({'message': '删除成功'})
         except Exception as e:
             return jsonify({'message': str(e)}), 500
+
+    # --- API Configuration Preset Endpoints ---
+
+    def _mask_api_key(key):
+        """Mask API key: show first 3 and last 4 characters."""
+        if not key or len(key) <= 8:
+            return key or ''
+        return key[:3] + '*' * (len(key) - 7) + key[-4:]
+
+    @app.route('/api/configs', methods=['GET'])
+    @jwt_required()
+    def list_configs():
+        configs = _load_configs()
+        # Default first, then by created_at descending
+        defaults = [c for c in configs if c.get('is_default')]
+        non_defaults = [c for c in configs if not c.get('is_default')]
+        non_defaults.sort(key=lambda c: c.get('created_at', ''), reverse=True)
+        sorted_configs = defaults + non_defaults
+        # Mask API keys
+        result = []
+        for c in sorted_configs:
+            item = {**c, 'api_key': _mask_api_key(c.get('api_key', ''))}
+            result.append(item)
+        return jsonify(result)
+
+    @app.route('/api/configs', methods=['POST'])
+    @jwt_required()
+    def create_config():
+        data = request.get_json() or {}
+        name = (data.get('name') or '').strip()
+        llm_url = (data.get('llm_url') or '').strip()
+        api_key = data.get('api_key', '')
+        model = (data.get('model') or '').strip()
+
+        if not name:
+            return jsonify({'message': '配置名称不能为空'}), 400
+        if not llm_url:
+            return jsonify({'message': 'API 接口地址不能为空'}), 400
+        if not model:
+            return jsonify({'message': '模型名称不能为空'}), 400
+
+        configs = _load_configs()
+        # Check unique name
+        if any(c['name'] == name for c in configs):
+            return jsonify({'message': f'配置名称 "{name}" 已存在'}), 409
+
+        new_config = {
+            'id': _generate_config_id(),
+            'name': name,
+            'llm_url': llm_url,
+            'api_key': api_key,
+            'model': model,
+            'is_default': len(configs) == 0,  # first config becomes default
+            'created_at': datetime.now().isoformat()
+        }
+        configs.append(new_config)
+        _save_configs(configs)
+        return jsonify(new_config), 201
+
+    @app.route('/api/configs/<config_id>', methods=['PUT'])
+    @jwt_required()
+    def update_config(config_id):
+        data = request.get_json() or {}
+        configs = _load_configs()
+        idx = next((i for i, c in enumerate(configs) if c['id'] == config_id), None)
+        if idx is None:
+            return jsonify({'message': '配置不存在'}), 404
+
+        config = configs[idx]
+        name = data.get('name', config['name']).strip()
+        if not name:
+            return jsonify({'message': '配置名称不能为空'}), 400
+
+        # Check unique name (excluding self)
+        if any(c['name'] == name and c['id'] != config_id for c in configs):
+            return jsonify({'message': f'配置名称 "{name}" 已被其他配置使用'}), 409
+
+        llm_url = data.get('llm_url', config['llm_url']).strip()
+        if not llm_url:
+            return jsonify({'message': 'API 接口地址不能为空'}), 400
+
+        model = data.get('model', config['model']).strip()
+        if not model:
+            return jsonify({'message': '模型名称不能为空'}), 400
+
+        config['name'] = name
+        config['llm_url'] = llm_url
+        config['api_key'] = data.get('api_key', config['api_key'])
+        config['model'] = model
+        _save_configs(configs)
+        return jsonify(config)
+
+    @app.route('/api/configs/<config_id>', methods=['DELETE'])
+    @jwt_required()
+    def delete_config(config_id):
+        configs = _load_configs()
+        idx = next((i for i, c in enumerate(configs) if c['id'] == config_id), None)
+        if idx is None:
+            return jsonify({'message': '配置不存在'}), 404
+
+        was_default = configs[idx].get('is_default', False)
+        configs.pop(idx)
+
+        # Auto-fallback default
+        if was_default and configs:
+            configs[0]['is_default'] = True
+
+        _save_configs(configs)
+        return jsonify({'message': '删除成功'})
+
+    @app.route('/api/configs/<config_id>/default', methods=['POST'])
+    @jwt_required()
+    def set_default_config(config_id):
+        configs = _load_configs()
+        found = False
+        for c in configs:
+            if c['id'] == config_id:
+                c['is_default'] = True
+                found = True
+            else:
+                c['is_default'] = False
+        if not found:
+            return jsonify({'message': '配置不存在'}), 404
+        _save_configs(configs)
+        return jsonify({'message': '已设为默认'})
 
     return app
 

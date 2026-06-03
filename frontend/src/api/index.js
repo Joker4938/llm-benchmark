@@ -25,4 +25,25 @@ api.interceptors.response.use(
   }
 )
 
+// Config preset API methods
+export function getConfigs() {
+  return api.get('/configs')
+}
+
+export function createConfig(data) {
+  return api.post('/configs', data)
+}
+
+export function updateConfig(id, data) {
+  return api.put(`/configs/${id}`, data)
+}
+
+export function deleteConfig(id) {
+  return api.delete(`/configs/${id}`)
+}
+
+export function setDefaultConfig(id) {
+  return api.post(`/configs/${id}/default`)
+}
+
 export default api
