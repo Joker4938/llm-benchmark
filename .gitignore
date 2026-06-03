@@ -188,3 +188,9 @@ backend/.webassets-cache
 
 # Reports
 reports/
+
+#Agent
+.codex/
+.claude/
+.agent/
+openspec/

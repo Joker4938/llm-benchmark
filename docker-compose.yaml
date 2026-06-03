@@ -8,7 +8,7 @@ services:
     image: llm-benchmark:latest
     container_name: llm-benchmark
     ports:
-      - "5000:5000"
+      - "8080:8080"
     volumes:
       - ./reports:/app/reports
     environment:

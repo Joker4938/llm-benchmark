@@ -40,7 +40,7 @@ ENV BENCH_USER=admin
 ENV BENCH_PASS=admin
 ENV JWT_SECRET_KEY=change-me-in-production
 
-EXPOSE 5000
+EXPOSE 8080
 
 WORKDIR /app
 CMD ["python", "backend/app.py"]
