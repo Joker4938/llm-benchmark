@@ -210,7 +210,7 @@ def calculate_percentile(values, percentile, reverse=False):
 async def run_benchmark(num_requests, concurrency, request_timeout, output_tokens, llm_url, api_key, model, use_long_context, progress_callback=None):
     # Configure HTTP client to handle high concurrency without connection pooling bottlenecks
     limits = httpx.Limits(max_connections=concurrency + 100, max_keepalive_connections=concurrency + 100)
-    http_client = httpx.AsyncClient(limits=limits)
+    http_client = httpx.AsyncClient(limits=limits, verify=False)
     
     client = AsyncOpenAI(base_url=llm_url, api_key=api_key, http_client=http_client)
     semaphore = asyncio.Semaphore(concurrency)
