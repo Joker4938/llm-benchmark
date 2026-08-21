@@ -243,9 +243,22 @@ class TaskApiTests(ApiTestCase):
         self.assertEqual(2, second.json()['queue_position'])
         self.assertNotIn(b'sk-inline-secret', self.database.path.read_bytes())
         self.assertNotIn('api_key', json.dumps(first.json()['payload']))
+        self.assertEqual('local-model', first.json()['payload']['endpoint']['model'])
+
+        stored = self.repository.save_api_config({
+            'name': 'snapshot-source', 'base_url': 'http://snapshot/v1',
+            'model': 'snapshot-model', 'api_key': 'sk-snapshot-secret',
+        })
+        snapshotted = self.client.post('/api/tasks', json=self.valid_task(
+            name='snapshotted', endpoint=None, api_config_id=stored['id'],
+        ))
+        self.assertEqual(202, snapshotted.status_code, snapshotted.text)
+        snapshot_payload = snapshotted.json()['payload']
+        self.assertEqual('snapshot-model', snapshot_payload['endpoint']['model'])
+        self.assertNotIn('api_key', snapshot_payload['endpoint'])
 
         queue = self.client.get('/api/queue').json()
-        self.assertEqual([1, 2], [item['queue_position'] for item in queue['queued']])
+        self.assertEqual([1, 2, 3], [item['queue_position'] for item in queue['queued']])
         task_id = first.json()['id']
         cancelled = self.client.post(f'/api/tasks/{task_id}/cancel')
         self.assertEqual(202, cancelled.status_code)

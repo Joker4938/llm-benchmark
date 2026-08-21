@@ -415,9 +415,13 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         config_id = value.api_config_id
         if config_id:
             try:
-                repository.get_api_config(config_id)
+                stored_endpoint = repository.get_api_config(config_id)
             except KeyError:
                 raise HTTPException(422, "API 配置不存在")
+            payload["endpoint"] = {
+                key: stored_endpoint[key]
+                for key in ("base_url", "model", "verify_tls", "timeout_seconds")
+            }
         elif value.endpoint:
             endpoint = dict(value.endpoint)
             for required in ("base_url", "model"):

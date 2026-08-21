@@ -289,6 +289,7 @@ async def execute_run(
                     },
                 }
             ),
+            "request": {"model": endpoint.model, "stream": stream},
             "artifacts": [
                 redact(
                     {

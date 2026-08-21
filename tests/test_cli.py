@@ -79,6 +79,11 @@ class CliExecutionTests(unittest.IsolatedAsyncioTestCase):
             code, payload = await execute_run(args, install_signal_handlers=False)
             self.assertEqual(EXIT_THRESHOLD, code)
             self.assertEqual('failed', payload['thresholds'][0]['status'])
+            self.assertEqual({'model': 'demo', 'stream': True}, payload['request'])
+            self.assertEqual(
+                {'prompt_type': 'general', 'input_size': 'short', 'output_tokens': 128},
+                payload['workload']['dimensions'],
+            )
             self.assertEqual(2, len(payload['artifacts']))
             for artifact in payload['artifacts']:
                 self.assertTrue((Path(directory) / artifact['path']).exists())

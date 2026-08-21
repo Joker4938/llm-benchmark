@@ -166,8 +166,19 @@ class BenchmarkTaskRunner:
             })
         value = summary.to_dict()
         value.update({
-            "workload": {"dataset": dataset.name, "sha256": dataset.sha256, "seed": snapshot.seed,
-                         "selected_record_ids": snapshot.selected_record_ids},
+            "workload": {
+                "dataset": dataset.name,
+                "version": dataset.version,
+                "sha256": dataset.sha256,
+                "seed": snapshot.seed,
+                "selected_record_ids": snapshot.selected_record_ids,
+                "dimensions": {
+                    "prompt_type": dimensions.prompt_type,
+                    "input_size": dimensions.input_size,
+                    "output_tokens": dimensions.output_size,
+                },
+            },
+            "request": {"model": endpoint.model, "stream": bool(payload.get("stream", True))},
             "artifacts": [
                 {"format": item.format, "path": item.relative_path, "size_bytes": item.size_bytes, "sha256": item.sha256}
                 for item in artifacts
