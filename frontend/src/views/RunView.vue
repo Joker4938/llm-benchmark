@@ -23,6 +23,27 @@
         <MetricReadout label="错误" :value="errorCount" unit="次" :tone="errorCount ? 'danger' : ''" />
       </section>
 
+      <section v-if="thresholdPanel" class="threshold-verdict" :class="thresholdPanel.status" aria-labelledby="run-threshold-title">
+        <header class="threshold-verdict-summary">
+          <div>
+            <span>THRESHOLD VERDICT</span>
+            <h2 id="run-threshold-title">
+              性能阈值
+            </h2>
+            <small>{{ thresholdPanel.name || '未命名模板' }}</small>
+          </div>
+          <strong>{{ thresholdStatusLabel(thresholdPanel.status) }}</strong>
+          <p>{{ thresholdSummary }}</p>
+        </header>
+        <div class="threshold-result-list" role="list" aria-label="性能阈值逐项结果">
+          <article v-for="item in thresholdPanel.results" :key="`${item.metric}-${item.operator}`" class="threshold-result-row" :class="item.status" role="listitem">
+            <div><small>{{ thresholdMetricLabel(item.metric) }}</small><strong>{{ thresholdMetricValue(item.metric, item.observed) }}</strong></div>
+            <code>{{ item.operator }} {{ thresholdMetricValue(item.metric, item.expected) }}</code>
+            <em>{{ thresholdRuleStatusLabel(item.status) }}</em>
+          </article>
+        </div>
+      </section>
+
       <div class="run-grid">
         <section class="panel event-panel">
           <div class="panel-heading">
@@ -105,6 +126,32 @@ const statusLabels = { queued: '等待执行', running: '正在加载', stopping
 const statusLabel = computed(() => statusLabels[task.value.status] || task.value.status)
 const transportLabel = computed(() => ({ sse: 'SSE 实时连接', reconnecting: 'SSE 正在重连', polling: '轮询回退 · 2 秒', idle: '等待连接' })[transport.value])
 const planLabel = computed(() => task.value && task.value.payload && task.value.payload.plan ? task.value.payload.plan.plan_type : '—')
+const thresholdEvaluation = computed(() => task.value && task.value.result ? task.value.result.thresholds : null)
+const thresholdSnapshot = computed(() => task.value && task.value.payload ? task.value.payload.thresholds : null)
+const thresholdPanel = computed(() => {
+  if (thresholdEvaluation.value) return thresholdEvaluation.value
+  if (!thresholdSnapshot.value) return null
+  const status = isTerminal.value ? 'not_evaluable' : 'pending'
+  return {
+    name: thresholdSnapshot.value.name,
+    status,
+    counts: null,
+    results: (thresholdSnapshot.value.rules || []).map(item => ({
+      metric: item.metric,
+      operator: item.operator,
+      expected: item.value,
+      observed: null,
+      status
+    }))
+  }
+})
+const thresholdSummary = computed(() => {
+  if (!thresholdPanel.value) return ''
+  if (thresholdPanel.value.status === 'pending') return '任务结束后使用本次固化模板逐项评估。'
+  const counts = thresholdPanel.value.counts
+  if (!counts) return '任务未生成完整摘要，所选规则无法评估。'
+  return `通过 ${counts.passed || 0} · 未达标 ${counts.failed || 0} · 不可评估 ${counts.not_evaluable || 0}`
+})
 const segments = computed(() => {
   const plan = task.value && task.value.payload && task.value.payload.plan
   if (!plan) return []
@@ -202,6 +249,34 @@ function nestedMetric(parent, name) {
   const value = task.value && task.value.result && task.value.result[parent] && task.value.result[parent][name]
   return typeof value === 'number' ? value.toFixed(3) : value
 }
+function thresholdMetricLabel(value) {
+  return ({
+    'latency.mean': '端到端平均延迟',
+    'latency.p50': '端到端 P50',
+    'latency.p90': '端到端 P90',
+    'latency.p95': '端到端 P95',
+    'latency.p99': '端到端 P99',
+    'ttft.mean': 'TTFT 平均',
+    'ttft.p50': 'TTFT P50',
+    'ttft.p95': 'TTFT P95',
+    'ttft.p99': 'TTFT P99',
+    'generation_duration.mean': '生成时长平均',
+    'request_output_tps.mean': '单请求输出 TPS',
+    achieved_qps: '实际 QPS',
+    aggregate_output_tps: '聚合输出 TPS',
+    error_rate: '错误率',
+    valid_response_rate: '有效响应率',
+    assertion_pass_rate: '断言通过率'
+  })[value] || value
+}
+function thresholdMetricValue(metricName, value) {
+  if (typeof value !== 'number') return '—'
+  if (['error_rate', 'valid_response_rate', 'assertion_pass_rate'].includes(metricName)) return `${(value * 100).toFixed(2)}%`
+  if (metricName.startsWith('latency.') || metricName.startsWith('ttft.') || metricName.startsWith('generation_duration.')) return `${value.toFixed(3)}s`
+  return value.toFixed(2)
+}
+function thresholdStatusLabel(value) { return ({ passed: '全部通过', failed: '存在未达标', not_evaluable: '部分不可评估', pending: '等待评估' })[value] || value }
+function thresholdRuleStatusLabel(value) { return ({ passed: '通过', failed: '未达标', not_evaluable: '不可评估', pending: '待评估' })[value] || value }
 function formatElapsed(value) { return `${Number(value || 0).toFixed(1)}s` }
 function formatTime(value) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—' }
 function phaseLabel(value) { return ({ connecting: '连接', warmup: '预热', load: '负载', cooldown: '冷却', finished: '结束' })[value] || value }

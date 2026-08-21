@@ -24,7 +24,7 @@
         <div class="history-main">
           <h2>{{ item.name }}</h2><p class="mono">
             {{ item.id }}
-          </p><span>{{ planName(item) }} · {{ modelName(item) }}</span>
+          </p><span>{{ planName(item) }} · {{ modelName(item) }}</span><em v-if="taskThreshold(item)" class="history-threshold-chip" :class="taskThreshold(item).status">阈值 {{ thresholdStatusLabel(taskThreshold(item).status) }}</em>
         </div>
         <div class="history-metrics">
           <span><small>P95</small><strong>{{ metric(item, 'latency', 'p95') }}</strong></span><span><small>QPS</small><strong>{{ metric(item, null, 'achieved_qps') }}</strong></span><span><small>成功</small><strong>{{ successRate(item) }}</strong></span>
@@ -144,6 +144,26 @@
           <MetricReadout label="完成请求" :value="result.completed_requests" /><MetricReadout label="有效响应" :value="result.valid_responses" /><MetricReadout label="TTFT P95" :value="nested('ttft', 'p95')" unit="s" /><MetricReadout label="输出 TPS" :value="result.aggregate_output_tps" unit="tok/s" />
         </div>
         <StateNotice v-if="selected.error_message" tone="danger" title="执行失败" :message="selected.error_message" />
+        <section v-if="selectedThreshold" class="record-detail-section threshold-verdict" :class="selectedThreshold.status" aria-labelledby="history-threshold-title">
+          <header class="threshold-verdict-summary">
+            <div>
+              <span>THRESHOLD VERDICT</span>
+              <h3 id="history-threshold-title">
+                性能阈值
+              </h3>
+              <small>{{ selectedThreshold.name || '未命名模板' }}</small>
+            </div>
+            <strong>{{ thresholdStatusLabel(selectedThreshold.status) }}</strong>
+            <p>{{ thresholdCountSummary(selectedThreshold) }}</p>
+          </header>
+          <div class="threshold-result-list" role="list" aria-label="性能阈值逐项结果">
+            <article v-for="item in selectedThreshold.results" :key="`${item.metric}-${item.operator}`" class="threshold-result-row" :class="item.status" role="listitem">
+              <div><small>{{ metricLabel(item.metric) }}</small><strong>{{ metricValue(item.metric, item.observed) }}</strong></div>
+              <code>{{ item.operator }} {{ metricValue(item.metric, item.expected) }}</code>
+              <em>{{ thresholdRuleStatusLabel(item.status) }}</em>
+            </article>
+          </div>
+        </section>
         <section v-if="canGenerateReports" class="record-detail-section baseline-section">
           <div class="panel-heading detail-heading">
             <div><span>BASELINE LEDGER</span><h3>历史基线</h3></div><small>{{ baselineCandidates.length }} 个候选</small>
@@ -286,6 +306,7 @@ const comparisonHasMetrics = computed(() => comparisonRuns.value.some(run => run
 const comparisonLoads = computed(() => Array.isArray(comparisonResult.value.per_model_loads) ? comparisonResult.value.per_model_loads : [])
 const finishedComparisonTasks = computed(() => selectedComparison.value ? selectedComparison.value.tasks.filter(item => ['completed', 'failed', 'cancelled', 'interrupted'].includes(item.status)).length : 0)
 const result = computed(() => selected.value && selected.value.result ? selected.value.result : {})
+const selectedThreshold = computed(() => result.value.thresholds || null)
 const canGenerateReports = computed(() => Boolean(selected.value && selected.value.result))
 const timeSeries = computed(() => Array.isArray(result.value.time_series) ? result.value.time_series : [])
 const displayWindows = computed(() => compactWindows(timeSeries.value))
@@ -498,6 +519,13 @@ function qpsLabel(value) { return typeof value === 'number' ? `目标 ${value.to
 function runMetric(run, group, key, kind) { const metrics = run.metrics || {}; const value = group ? (metrics[group] || {})[key] : metrics[key]; if (typeof value !== 'number') return '—'; return kind === 'seconds' ? `${value.toFixed(3)}s` : value.toFixed(2) }
 function runRate(run, key) { const metrics = run.metrics || {}; const completed = Number(metrics.completed_requests) || 0; const value = Number(metrics[key]); return completed && Number.isFinite(value) ? `${(value / completed * 100).toFixed(1)}%` : '—' }
 function resourceSummary(run) { const metrics = run.metrics || {}; const resource = metrics.resource_metrics || metrics.resources || metrics.resource; if (!resource) return '未采集'; if (typeof resource === 'string') return resource; const values = []; if (typeof resource.gpu_utilization === 'number') values.push(`GPU ${resource.gpu_utilization.toFixed(0)}%`); if (typeof resource.cpu_percent === 'number') values.push(`CPU ${resource.cpu_percent.toFixed(0)}%`); if (typeof resource.memory_mb === 'number') values.push(`${resource.memory_mb.toFixed(0)} MB`); return values.join(' · ') || '已记录' }
+function taskThreshold(item) { return item && item.result ? item.result.thresholds : null }
+function thresholdCountSummary(value) {
+  const counts = value && value.counts ? value.counts : {}
+  return `通过 ${counts.passed || 0} · 未达标 ${counts.failed || 0} · 不可评估 ${counts.not_evaluable || 0}`
+}
+function thresholdStatusLabel(value) { return ({ passed: '全部通过', failed: '存在未达标', not_evaluable: '部分不可评估' })[value] || value }
+function thresholdRuleStatusLabel(value) { return ({ passed: '通过', failed: '未达标', not_evaluable: '不可评估' })[value] || value }
 function metricLabel(value) { return ({ 'latency.mean': '端到端平均延迟', 'latency.p50': '端到端 P50', 'latency.p90': '端到端 P90', 'latency.p95': '端到端 P95', 'latency.p99': '端到端 P99', 'ttft.mean': 'TTFT 平均', 'ttft.p50': 'TTFT P50', 'ttft.p95': 'TTFT P95', 'ttft.p99': 'TTFT P99', 'generation_duration.mean': '生成时长平均', 'request_output_tps.mean': '单请求输出 TPS', achieved_qps: '实际 QPS', aggregate_output_tps: '聚合输出 TPS', error_rate: '错误率', valid_response_rate: '有效响应率', assertion_pass_rate: '断言通过率' })[value] || value }
 function metricValue(metricName, value) { if (typeof value !== 'number') return '—'; if (rateMetrics.includes(metricName)) return `${(value * 100).toFixed(2)}%`; if (metricName.startsWith('latency.') || metricName.startsWith('ttft.') || metricName.startsWith('generation_duration.')) return `${value.toFixed(3)}s`; return value.toFixed(2) }
 function deltaValue(item) { if (typeof item.absolute_delta !== 'number') return '—'; const prefix = item.absolute_delta > 0 ? '+' : ''; if (rateMetrics.includes(item.metric)) return `${prefix}${(item.absolute_delta * 100).toFixed(2)}pp`; if (item.metric.startsWith('latency.') || item.metric.startsWith('ttft.') || item.metric.startsWith('generation_duration.')) return `${prefix}${item.absolute_delta.toFixed(3)}s`; return `${prefix}${item.absolute_delta.toFixed(2)}` }
