@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import tempfile
@@ -367,6 +368,48 @@ class ReportAndDiagnosticApiTests(ApiTestCase):
         traversal = self.client.get(f'/api/reports/{malicious_id}/download')
         self.assertEqual(400, traversal.status_code)
         self.assertEqual(204, self.client.delete(f"/api/reports/{report['id']}").status_code)
+
+    def test_on_demand_report_formats_are_indexed_hashed_and_downloadable(self):
+        task_id = self.completed_task(
+            '多格式报告', self.comparable_result(model='report-model'),
+        )
+        media_types = {
+            'json': 'application/json',
+            'html': 'text/html',
+            'csv': 'text/csv',
+            'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        }
+
+        generated_reports = []
+        for format_name, media_type in media_types.items():
+            generated = self.client.post(
+                f'/api/tasks/{task_id}/reports', json={'format': format_name},
+            )
+            self.assertEqual(201, generated.status_code, generated.text)
+            report = generated.json()
+            generated_reports.append(report)
+            self.assertEqual(format_name, report['format'])
+
+            download = self.client.get(f"/api/reports/{report['id']}/download")
+            self.assertEqual(200, download.status_code, download.text)
+            self.assertIn(media_type, download.headers['content-type'])
+            self.assertIn(report['relative_path'], download.headers['content-disposition'])
+            self.assertEqual(len(download.content), report['size_bytes'])
+            self.assertEqual(hashlib.sha256(download.content).hexdigest(), report['sha256'])
+            self.assertNotIn(b'must-not-leak', download.content)
+
+            if format_name == 'html':
+                document = download.text.lower()
+                self.assertIn('<!doctype html>', document)
+                self.assertNotIn('http://', document)
+                self.assertNotIn('https://', document)
+
+        indexed = self.client.get(f'/api/reports?task_id={task_id}')
+        self.assertEqual(200, indexed.status_code, indexed.text)
+        self.assertEqual(
+            {report['id'] for report in generated_reports},
+            {report['id'] for report in indexed.json()},
+        )
 
     def test_readiness_and_diagnostics_are_offline_and_secret_free(self):
         ready = self.client.get('/health/ready')
