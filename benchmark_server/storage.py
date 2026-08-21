@@ -233,6 +233,59 @@ class Repository:
             claimed = connection.execute("SELECT * FROM tasks WHERE id=?", (row["id"],)).fetchone()
         return self._task(claimed)
 
+    def claim_next_task_batch(self, worker: str) -> list[dict[str, Any]]:
+        """领取下一项工作；同步比较会在同一事务中领取整组任务。"""
+
+        now = utc_now()
+        with self.database.transaction(immediate=True) as connection:
+            first = connection.execute(
+                """SELECT tasks.id,tasks.comparison_id,comparisons.mode AS comparison_mode
+                FROM tasks LEFT JOIN comparisons ON comparisons.id=tasks.comparison_id
+                WHERE tasks.status='queued' AND (
+                    tasks.comparison_id IS NULL
+                    OR comparisons.mode='synchronous'
+                    OR NOT EXISTS (
+                        SELECT 1 FROM tasks AS prior
+                        WHERE prior.comparison_id=tasks.comparison_id
+                        AND prior.comparison_index < tasks.comparison_index
+                        AND prior.status NOT IN ('completed','failed','cancelled','interrupted')
+                    )
+                )
+                ORDER BY tasks.priority DESC,tasks.created_at ASC,tasks.comparison_index ASC
+                LIMIT 1"""
+            ).fetchone()
+            if not first:
+                return []
+            if first["comparison_mode"] == "synchronous":
+                rows = connection.execute(
+                    """SELECT id FROM tasks
+                    WHERE comparison_id=? AND status='queued'
+                    ORDER BY comparison_index ASC""",
+                    (first["comparison_id"],),
+                ).fetchall()
+            else:
+                rows = [first]
+
+            claimed_ids: list[str] = []
+            for row in rows:
+                task_id = str(row["id"])
+                token = f"{worker}:{uuid.uuid4().hex}"
+                cursor = connection.execute(
+                    """UPDATE tasks SET status='running',claim_token=?,started_at=?,heartbeat_at=?,updated_at=?
+                    WHERE id=? AND status='queued'""",
+                    (token, now, now, now, task_id),
+                )
+                if cursor.rowcount == 1:
+                    claimed_ids.append(task_id)
+            if not claimed_ids:
+                return []
+            placeholders = ",".join("?" for _ in claimed_ids)
+            claimed = connection.execute(
+                f"SELECT * FROM tasks WHERE id IN ({placeholders}) ORDER BY comparison_index ASC",
+                claimed_ids,
+            ).fetchall()
+        return [self._task(row) for row in claimed]
+
     def heartbeat(self, task_id: str, claim_token: str) -> bool:
         with self.database.transaction(immediate=True) as connection:
             cursor = connection.execute(
@@ -481,6 +534,9 @@ class Repository:
             "finished_at": row["finished_at"],
             "heartbeat_at": row["heartbeat_at"],
             "updated_at": row["updated_at"],
+            "comparison_id": row["comparison_id"],
+            "comparison_index": row["comparison_index"],
+            "comparison_target_name": row["comparison_target_name"],
         }
 
     def _save_json_resource(self, table, value, resource_id, *, dataset=False):

@@ -42,15 +42,23 @@ class LocalExecutor:
         self.repository.recover_interrupted_tasks()
         self._install_signal_handlers()
         while not self.shutdown.cancelled:
-            task = self.repository.claim_next_task(self.name)
-            if not task:
+            tasks = self.repository.claim_next_task_batch(self.name)
+            if not tasks:
                 await self._record_executor_heartbeat()
                 try:
                     await asyncio.wait_for(self.shutdown.wait(), timeout=self.poll_seconds)
                 except asyncio.TimeoutError:
                     pass
                 continue
-            await self.run_claimed(task)
+            await self.run_claimed_batch(tasks)
+
+    async def run_claimed_batch(self, tasks: list[Mapping[str, Any]]) -> None:
+        """运行一项普通工作，或并发运行一次同步模型比较的全部子任务。"""
+
+        if len(tasks) == 1:
+            await self.run_claimed(tasks[0])
+            return
+        await asyncio.gather(*(self.run_claimed(task) for task in tasks))
 
     async def run_claimed(self, task: Mapping[str, Any]) -> None:
         cancellation = CancellationToken()

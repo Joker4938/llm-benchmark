@@ -156,6 +156,16 @@ _MIGRATIONS = (
         CREATE INDEX IF NOT EXISTS ix_task_baselines_baseline ON task_baselines(baseline_task_id);
         """,
     ),
+    (
+        3,
+        """
+        ALTER TABLE tasks ADD COLUMN comparison_id TEXT;
+        ALTER TABLE tasks ADD COLUMN comparison_index INTEGER;
+        ALTER TABLE tasks ADD COLUMN comparison_target_name TEXT;
+        CREATE INDEX IF NOT EXISTS ix_tasks_comparison
+            ON tasks(comparison_id, comparison_index, status);
+        """,
+    ),
 )
 
 

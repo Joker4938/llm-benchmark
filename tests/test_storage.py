@@ -73,7 +73,7 @@ class DatabaseTests(StorageTestCase):
         self.assertTrue(result.recovered)
         self.assertTrue(Path(result.backup_path).exists())
         with recovery_db.connect() as connection:
-            self.assertEqual(2, connection.execute('SELECT COUNT(*) FROM schema_migrations').fetchone()[0])
+            self.assertEqual(3, connection.execute('SELECT COUNT(*) FROM schema_migrations').fetchone()[0])
 
     def test_concurrent_claim_never_claims_same_task_twice(self):
         task_id = self.repository.create_task('only', {})
@@ -155,6 +155,70 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         self.temp.cleanup()
+
+    async def test_sequential_comparison_only_claims_next_completed_dependency(self):
+        comparison_id = self.repository.save_comparison({
+            'name': '顺序比较', 'mode': 'sequential',
+            'resource_semantics': 'independent', 'task_ids': [],
+        })
+        first = self.repository.create_task('model-a', {})
+        second = self.repository.create_task('model-b', {})
+        with self.repository.database.transaction(immediate=True) as connection:
+            connection.execute(
+                'UPDATE tasks SET comparison_id=?,comparison_index=0 WHERE id=?',
+                (comparison_id, first),
+            )
+            connection.execute(
+                'UPDATE tasks SET comparison_id=?,comparison_index=1 WHERE id=?',
+                (comparison_id, second),
+            )
+
+        claimed = self.repository.claim_next_task_batch('worker')
+
+        self.assertEqual([first], [item['id'] for item in claimed])
+        self.assertEqual([], self.repository.claim_next_task_batch('worker'))
+        self.repository.finish_task(
+            first, claimed[0]['claim_token'], status='completed', result={'ok': True},
+        )
+        self.assertEqual(
+            [second],
+            [item['id'] for item in self.repository.claim_next_task_batch('worker')],
+        )
+
+    async def test_synchronous_comparison_is_claimed_and_run_as_one_batch(self):
+        comparison_id = self.repository.save_comparison({
+            'name': '同步比较', 'mode': 'synchronous',
+            'resource_semantics': 'shared', 'task_ids': [],
+        })
+        task_ids = [
+            self.repository.create_task('model-a', {'target': 'a'}),
+            self.repository.create_task('model-b', {'target': 'b'}),
+        ]
+        with self.repository.database.transaction(immediate=True) as connection:
+            for index, task_id in enumerate(task_ids):
+                connection.execute(
+                    'UPDATE tasks SET comparison_id=?,comparison_index=? WHERE id=?',
+                    (comparison_id, index, task_id),
+                )
+        claimed = self.repository.claim_next_task_batch('worker')
+        started: list[str] = []
+        both_started = asyncio.Event()
+
+        async def runner(payload, cancellation, event_sink):
+            started.append(payload['target'])
+            if len(started) == 2:
+                both_started.set()
+            await asyncio.wait_for(both_started.wait(), 0.5)
+            return {'target': payload['target']}
+
+        executor = LocalExecutor(self.repository, runner, heartbeat_seconds=0.01)
+        await executor.run_claimed_batch(claimed)
+
+        self.assertCountEqual(['a', 'b'], started)
+        self.assertEqual(
+            ['completed', 'completed'],
+            [self.repository.get_task(task_id)['status'] for task_id in task_ids],
+        )
 
     async def test_executor_persists_events_and_result(self):
         task_id = self.repository.create_task('run', {'value': 7})
