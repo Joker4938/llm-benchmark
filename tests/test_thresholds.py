@@ -40,11 +40,78 @@ class ThresholdTests(unittest.TestCase):
         baseline = self.summary.to_dict()
         result = compare_baseline(current, baseline)
         self.assertTrue(result["compatible"])
+        self.assertEqual("stable", result["conclusion"])
         self.assertEqual(0.0, result["metrics"][0]["absolute_delta"])
         baseline["plan"]["concurrency"] = 1
         result = compare_baseline(current, baseline)
         self.assertFalse(result["compatible"])
+        self.assertEqual("incompatible", result["conclusion"])
         self.assertIn("plan.concurrency 不一致", result["incompatibilities"])
+        self.assertTrue(all(item["status"] == "not_evaluable" for item in result["metrics"]))
+
+    def test_baseline_regression_uses_metric_direction_and_tolerance(self):
+        baseline = self.summary.to_dict()
+        current = self.summary.to_dict()
+        baseline.update({
+            "completed_requests": 100,
+            "transport_successes": 100,
+            "valid_responses": 100,
+            "assertion_passes": 100,
+            "achieved_qps": 100.0,
+            "aggregate_output_tps": 100.0,
+        })
+        current.update({
+            "completed_requests": 100,
+            "transport_successes": 98,
+            "valid_responses": 98,
+            "assertion_passes": 98,
+            "achieved_qps": 95.0,
+            "aggregate_output_tps": 110.0,
+        })
+        baseline["latency"]["p95"] = 2.0
+        current["latency"]["p95"] = 2.2
+
+        result = compare_baseline(current, baseline)
+        by_metric = {item["metric"]: item for item in result["metrics"]}
+        self.assertEqual("regressed", result["conclusion"])
+        self.assertEqual("regressed", by_metric["latency.p95"]["status"])
+        self.assertEqual("stable", by_metric["achieved_qps"]["status"])
+        self.assertEqual("improved", by_metric["aggregate_output_tps"]["status"])
+        self.assertEqual("regressed", by_metric["error_rate"]["status"])
+        self.assertEqual(2, result["counts"]["regressed"])
+
+    def test_baseline_accepts_custom_tolerance(self):
+        baseline = self.summary.to_dict()
+        current = self.summary.to_dict()
+        baseline["latency"]["p95"] = 2.0
+        current["latency"]["p95"] = 2.2
+        result = compare_baseline(
+            current,
+            baseline,
+            metrics=("latency.p95",),
+            tolerances={"latency.p95": {"percent": 15.0, "absolute": 0.0}},
+        )
+        self.assertEqual("stable", result["conclusion"])
+        self.assertEqual("stable", result["metrics"][0]["status"])
+        self.assertEqual(15.0, result["metrics"][0]["tolerance_percent"])
+
+    def test_baseline_checks_workload_and_request_dimensions(self):
+        current = self.summary.to_dict()
+        baseline = self.summary.to_dict()
+        current["workload"] = {
+            "sha256": "same", "seed": 1, "selected_record_ids": ["1"],
+            "dimensions": {"prompt_type": "general", "input_size": "short", "output_tokens": 128},
+        }
+        baseline["workload"] = {
+            "sha256": "same", "seed": 1, "selected_record_ids": ["1"],
+            "dimensions": {"prompt_type": "general", "input_size": "short", "output_size": 256},
+        }
+        current["request"] = {"model": "model-a", "stream": True}
+        baseline["request"] = {"model": "model-a", "stream": False}
+        result = compare_baseline(current, baseline)
+        self.assertFalse(result["compatible"])
+        self.assertIn("workload.dimensions.output_tokens 不一致", result["incompatibilities"])
+        self.assertIn("request.stream 不一致", result["incompatibilities"])
 
     def test_invalid_threshold_is_rejected(self):
         with self.assertRaises(ValueError):

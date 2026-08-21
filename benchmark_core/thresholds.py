@@ -50,13 +50,17 @@ class ThresholdResult:
 
 @dataclass(frozen=True, slots=True)
 class BaselineMetricDelta:
-    """当前任务相对基线的单指标差异。"""
+    """当前任务相对基线的单指标差异与回归判定。"""
 
     metric: str
     current: float | None
     baseline: float | None
     absolute_delta: float | None
     percent_delta: float | None
+    direction: str
+    tolerance_percent: float | None
+    tolerance_absolute: float
+    status: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -65,6 +69,10 @@ class BaselineMetricDelta:
             "baseline": self.baseline,
             "absolute_delta": self.absolute_delta,
             "percent_delta": self.percent_delta,
+            "direction": self.direction,
+            "tolerance_percent": self.tolerance_percent,
+            "tolerance_absolute": self.tolerance_absolute,
+            "status": self.status,
         }
 
 
@@ -80,6 +88,15 @@ _DEFAULT_METRICS = (
     "valid_response_rate",
     "assertion_pass_rate",
 )
+
+_LOWER_IS_BETTER = frozenset({
+    "latency.mean", "latency.p50", "latency.p90", "latency.p95", "latency.p99",
+    "ttft.mean", "ttft.p50", "ttft.p95", "ttft.p99", "generation_duration.mean",
+    "error_rate",
+})
+_RATE_METRICS = frozenset({"error_rate", "valid_response_rate", "assertion_pass_rate"})
+_DEFAULT_TOLERANCE_PERCENT = 5.0
+_DEFAULT_RATE_TOLERANCE_ABSOLUTE = 0.01
 
 
 def parse_threshold(value: str) -> ThresholdRule:
@@ -157,39 +174,142 @@ def compare_baseline(
     baseline: Mapping[str, Any],
     *,
     metrics: Sequence[str] = _DEFAULT_METRICS,
+    tolerances: Mapping[str, Mapping[str, float | None] | float] | None = None,
 ) -> dict[str, Any]:
-    """比较两个摘要，并明确报告兼容性与逐指标差异。"""
+    """比较两个摘要，并明确报告兼容性、逐指标差异和回归结论。"""
 
     incompatibilities = _compatibility_issues(current, baseline)
+    compatible = not incompatibilities
     current_metrics = summary_metrics(current)
     baseline_metrics = summary_metrics(baseline)
     deltas: list[dict[str, Any]] = []
+    counts = {"regressed": 0, "improved": 0, "stable": 0, "not_evaluable": 0}
     for metric in metrics:
         now = current_metrics.get(metric)
         old = baseline_metrics.get(metric)
         absolute = now - old if now is not None and old is not None else None
         percent = (absolute / old * 100.0) if absolute is not None and old not in {None, 0} else None
-        deltas.append(BaselineMetricDelta(metric, now, old, absolute, percent).to_dict())
+        direction = "lower_is_better" if metric in _LOWER_IS_BETTER else "higher_is_better"
+        tolerance_percent, tolerance_absolute = _baseline_tolerance(metric, tolerances)
+        status = _baseline_metric_status(
+            compatible, now, old, absolute, direction,
+            tolerance_percent, tolerance_absolute,
+        )
+        if status in counts:
+            counts[status] += 1
+        deltas.append(BaselineMetricDelta(
+            metric, now, old, absolute, percent, direction,
+            tolerance_percent, tolerance_absolute, status,
+        ).to_dict())
+    if not compatible:
+        conclusion = "incompatible"
+    elif counts["regressed"]:
+        conclusion = "regressed"
+    elif counts["improved"]:
+        conclusion = "improved"
+    elif counts["not_evaluable"] == len(deltas):
+        conclusion = "not_evaluable"
+    else:
+        conclusion = "stable"
     return {
-        "compatible": not incompatibilities,
+        "compatible": compatible,
         "incompatibilities": incompatibilities,
+        "conclusion": conclusion,
+        "counts": counts,
         "metrics": deltas,
     }
 
 
+def _baseline_tolerance(
+    metric: str,
+    tolerances: Mapping[str, Mapping[str, float | None] | float] | None,
+) -> tuple[float | None, float]:
+    configured = tolerances.get(metric) if tolerances else None
+    default_absolute = _DEFAULT_RATE_TOLERANCE_ABSOLUTE if metric in _RATE_METRICS else 0.0
+    if isinstance(configured, Mapping):
+        percent = _number(configured.get("percent"))
+        absolute = _number(configured.get("absolute"))
+        return (max(0.0, percent) if percent is not None else None), max(0.0, absolute if absolute is not None else default_absolute)
+    if configured is not None:
+        percent = _number(configured)
+        return (max(0.0, percent) if percent is not None else None), default_absolute
+    return _DEFAULT_TOLERANCE_PERCENT, default_absolute
+
+
+def _baseline_metric_status(
+    compatible: bool,
+    current: float | None,
+    baseline: float | None,
+    absolute_delta: float | None,
+    direction: str,
+    tolerance_percent: float | None,
+    tolerance_absolute: float,
+) -> str:
+    if not compatible or current is None or baseline is None or absolute_delta is None:
+        return "not_evaluable"
+    threshold = tolerance_absolute
+    if tolerance_percent is not None:
+        threshold = max(threshold, abs(baseline) * tolerance_percent / 100.0)
+    adverse_delta = absolute_delta if direction == "lower_is_better" else -absolute_delta
+    if adverse_delta > threshold:
+        return "regressed"
+    if adverse_delta < -threshold:
+        return "improved"
+    return "stable"
+
+
 def _compatibility_issues(current: Mapping[str, Any], baseline: Mapping[str, Any]) -> list[str]:
     issues: list[str] = []
+    if current.get("schema_version") != baseline.get("schema_version"):
+        issues.append("schema_version 不一致")
     current_plan = current.get("plan") if isinstance(current.get("plan"), Mapping) else {}
     baseline_plan = baseline.get("plan") if isinstance(baseline.get("plan"), Mapping) else {}
-    for key in ("plan_type", "concurrency", "target_qps"):
-        if current_plan.get(key) != baseline_plan.get(key):
-            issues.append(f"plan.{key} 不一致")
+    for key in (
+        "plan_type", "concurrency", "total_requests", "duration_seconds", "target_qps",
+        "warmup_seconds", "cooldown_seconds", "stages",
+    ):
+        _append_mismatch(issues, f"plan.{key}", current_plan, baseline_plan, key)
     current_workload = current.get("workload") if isinstance(current.get("workload"), Mapping) else {}
     baseline_workload = baseline.get("workload") if isinstance(baseline.get("workload"), Mapping) else {}
-    for key in ("sha256", "seed", "selected_record_ids"):
-        if current_workload and baseline_workload and current_workload.get(key) != baseline_workload.get(key):
-            issues.append(f"workload.{key} 不一致")
+    if current_workload or baseline_workload:
+        for key in ("sha256", "seed", "selected_record_ids"):
+            _append_mismatch(issues, f"workload.{key}", current_workload, baseline_workload, key)
+        current_dimensions = current_workload.get("dimensions") if isinstance(current_workload.get("dimensions"), Mapping) else {}
+        baseline_dimensions = baseline_workload.get("dimensions") if isinstance(baseline_workload.get("dimensions"), Mapping) else {}
+        for key in ("prompt_type", "input_size"):
+            _append_mismatch(issues, f"workload.dimensions.{key}", current_dimensions, baseline_dimensions, key)
+        _append_alias_mismatch(
+            issues, "workload.dimensions.output_tokens", current_dimensions, baseline_dimensions,
+            ("output_tokens", "output_size"),
+        )
+    current_request = current.get("request") if isinstance(current.get("request"), Mapping) else {}
+    baseline_request = baseline.get("request") if isinstance(baseline.get("request"), Mapping) else {}
+    if current_request or baseline_request:
+        for key in ("model", "stream"):
+            _append_mismatch(issues, f"request.{key}", current_request, baseline_request, key)
     return issues
+
+
+def _append_mismatch(
+    issues: list[str], label: str,
+    current: Mapping[str, Any], baseline: Mapping[str, Any], key: str,
+) -> None:
+    if key not in current or key not in baseline:
+        issues.append(f"{label} 缺失，无法确认兼容性")
+    elif current.get(key) != baseline.get(key):
+        issues.append(f"{label} 不一致")
+
+
+def _append_alias_mismatch(
+    issues: list[str], label: str,
+    current: Mapping[str, Any], baseline: Mapping[str, Any], aliases: Sequence[str],
+) -> None:
+    current_value = next((current[key] for key in aliases if key in current), None)
+    baseline_value = next((baseline[key] for key in aliases if key in baseline), None)
+    if not any(key in current for key in aliases) or not any(key in baseline for key in aliases):
+        issues.append(f"{label} 缺失，无法确认兼容性")
+    elif current_value != baseline_value:
+        issues.append(f"{label} 不一致")
 
 
 def _compare(observed: float, operator: str, expected: float) -> bool:
