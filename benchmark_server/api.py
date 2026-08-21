@@ -676,6 +676,45 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             raise HTTPException(404, "当前任务尚未选择历史基线")
         return Response(status_code=204)
 
+    @app.post("/api/comparisons/preflight")
+    def comparison_preflight(value: ComparisonInput, user: str = Depends(current_user)):
+        if not value.targets or value.plan is None:
+            raise HTTPException(422, "模型比较预检必须提供 targets 和 plan")
+        for target in value.targets:
+            if target.api_config_id:
+                try:
+                    repository.get_api_config(target.api_config_id)
+                except KeyError:
+                    raise HTTPException(422, f"比较目标 {target.name} 的 API 配置不存在")
+            elif target.endpoint:
+                for required in ("base_url", "model"):
+                    if not target.endpoint.get(required):
+                        raise HTTPException(422, f"比较目标 {target.name} 的 endpoint.{required} 不能为空")
+        plan = _plan(value.plan)
+        multiplier = len(value.targets) if value.mode == "synchronous" else 1
+        request_config = RequestConfig(
+            messages=[{"role": "user", "content": "comparison-preflight"}],
+            max_output_tokens=int(value.workload.get("output_size", 128)),
+        )
+        scaled_plan = _scale_comparison_plan(plan, multiplier)
+        try:
+            risks = validate_plan(
+                scaled_plan,
+                [request_config],
+                SafetyLimits(),
+                risk_confirmed=value.risk_confirmed,
+            )
+        except PermissionError as exc:
+            raise HTTPException(409, str(exc))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        return {
+            "valid": True,
+            "risks": risks,
+            "estimated_requests": _estimated_requests(plan),
+            **_comparison_metadata(value, plan, value.targets),
+        }
+
     @app.get("/api/comparisons")
     def list_comparisons(user: str = Depends(current_user)):
         return repository.list_comparisons()
@@ -702,6 +741,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             })
             return repository.get_comparison(item_id)
 
+        comparison_preflight(value, user)
         plan_data = dict(value.plan or {})
         workload = {"seed": 1, **value.workload}
         task_specs = []
@@ -910,6 +950,33 @@ def _estimated_requests(plan: BenchmarkPlan) -> int | None:
     if plan.stages and all(item.requests is not None for item in plan.stages):
         return sum(int(item.requests or 0) for item in plan.stages)
     return plan.total_requests
+
+
+def _scale_comparison_plan(plan: BenchmarkPlan, multiplier: int) -> BenchmarkPlan:
+    """将同步比较的每模型计划换算为总生成负载，用于安全校验。"""
+
+    stages = tuple(
+        StageConfig(
+            stage.name,
+            stage.concurrency * multiplier,
+            stage.requests * multiplier if stage.requests is not None else None,
+            stage.duration_seconds,
+            stage.target_qps * multiplier if stage.target_qps is not None else None,
+        )
+        for stage in plan.stages
+    )
+    return BenchmarkPlan(
+        plan.name,
+        plan.plan_type,
+        plan.concurrency * multiplier,
+        plan.total_requests * multiplier if plan.total_requests is not None else None,
+        plan.duration_seconds,
+        plan.target_qps * multiplier if plan.target_qps is not None else None,
+        plan.warmup_seconds,
+        plan.cooldown_seconds,
+        stages,
+        plan.metadata,
+    )
 
 
 def _comparison_metadata(

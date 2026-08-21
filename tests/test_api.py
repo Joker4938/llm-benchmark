@@ -453,6 +453,36 @@ class ReportAndDiagnosticApiTests(ApiTestCase):
         )
         self.assertTrue(all(run['status'] == 'completed' for run in finished['result']['runs']))
 
+    def test_comparison_preflight_checks_synchronous_aggregate_load(self):
+        payload = {
+            'name': '同步总负载预检',
+            'mode': 'synchronous',
+            'resource_semantics': 'independent',
+            'confirm_synchronous': True,
+            'targets': [
+                {'name': 'A', 'endpoint': {'base_url': 'http://a.local/v1', 'model': 'a'}},
+                {'name': 'B', 'endpoint': {'base_url': 'http://b.local/v1', 'model': 'b'}},
+            ],
+            'plan': {
+                'plan_type': 'fixed_concurrency',
+                'concurrency': 60,
+                'total_requests': 10,
+            },
+        }
+
+        needs_confirmation = self.client.post('/api/comparisons/preflight', json=payload)
+        self.assertEqual(409, needs_confirmation.status_code, needs_confirmation.text)
+        payload['risk_confirmed'] = True
+        accepted = self.client.post('/api/comparisons/preflight', json=payload)
+        self.assertEqual(200, accepted.status_code, accepted.text)
+        self.assertEqual(120, accepted.json()['aggregate_load']['max_concurrency'])
+        self.assertIn('高并发', accepted.json()['risks'])
+
+        payload['plan']['concurrency'] = 300
+        rejected = self.client.post('/api/comparisons/preflight', json=payload)
+        self.assertEqual(422, rejected.status_code, rejected.text)
+        self.assertIn('并发数超过安全上限', rejected.json()['error']['message'])
+
     def test_synchronous_comparison_reports_per_model_and_aggregate_load(self):
         payload = {
             'name': '共享资源同步比较',
