@@ -36,6 +36,101 @@
       </article>
     </section>
 
+    <section v-if="comparisons.length" class="comparison-history-section" aria-labelledby="comparison-history-title">
+      <div class="panel-heading comparison-history-heading">
+        <div>
+          <span>MODEL COMPARISONS</span><h2 id="comparison-history-title">
+            模型比较组
+          </h2>
+        </div>
+        <small>{{ comparisons.length }} 组 · 不生成综合分</small>
+      </div>
+      <div class="comparison-history-list">
+        <article v-for="item in comparisons" :key="item.id" class="comparison-history-card" :class="item.status">
+          <div class="comparison-card-state">
+            <span class="state-lamp" :class="item.status"></span><strong>{{ statusLabel(item.status) }}</strong>
+          </div>
+          <div class="comparison-card-main">
+            <h3>{{ item.name }}</h3><code>{{ item.id }}</code><p>{{ comparisonModeLabel(item.mode) }} · {{ resourceSemanticsLabel(item.resource_semantics) }} · {{ item.tasks.length }} 个模型</p>
+          </div>
+          <div class="comparison-card-load">
+            <small>总生成负载</small><strong>{{ comparisonLoad(item, 'max_concurrency') }} 并发</strong><span>{{ comparisonActiveModels(item) }} 个同时活动模型</span>
+          </div>
+          <time>{{ formatTime(item.created_at) }}</time>
+          <button type="button" class="secondary-button" @click="openComparison(item)">
+            查看比较
+          </button>
+        </article>
+      </div>
+    </section>
+
+    <div v-if="selectedComparison" class="drawer-backdrop" @click.self="closeComparison">
+      <aside class="record-drawer comparison-drawer" role="dialog" aria-modal="true" :aria-label="`${selectedComparison.name} 模型比较详情`">
+        <button class="drawer-close" type="button" aria-label="关闭模型比较" @click="closeComparison">
+          ×
+        </button>
+        <p class="eyebrow">
+          MODEL COMPARISON
+        </p>
+        <h2>{{ selectedComparison.name }}</h2>
+        <p class="comparison-id mono">
+          {{ selectedComparison.id }}
+        </p>
+        <div class="comparison-summary-strip">
+          <MetricReadout label="比较状态" :value="statusLabel(selectedComparison.status)" hint="实时状态" />
+          <MetricReadout label="调度方式" :value="comparisonModeLabel(selectedComparison.mode)" hint="执行策略" />
+          <MetricReadout label="资源语义" :value="resourceSemanticsLabel(selectedComparison.resource_semantics)" hint="容量解释" />
+          <MetricReadout label="模型数量" :value="selectedComparison.tasks.length" unit="个" />
+        </div>
+        <StateNotice v-if="comparisonError" tone="danger" title="比较详情刷新失败" :message="comparisonError" />
+        <StateNotice v-if="comparisonResult.warning" tone="warning" title="共享资源竞争效应" :message="comparisonResult.warning" />
+        <section class="comparison-load-ledger">
+          <div class="panel-heading detail-heading">
+            <div><span>LOAD LEDGER</span><h3>统一负载口径</h3></div><small>{{ comparisonResult.same_workload_order ? '样本顺序一致' : '样本顺序未知' }}</small>
+          </div>
+          <div class="comparison-load-grid">
+            <article v-for="(lane, index) in comparisonLoads" :key="`${lane.target_name}-${index}`">
+              <span>M{{ String(index + 1).padStart(2, '0') }}</span><strong>{{ lane.target_name }}</strong><small>{{ lane.max_concurrency }} 并发 · {{ qpsLabel(lane.target_qps) }} · {{ lane.estimated_requests }} 请求</small>
+            </article>
+            <article class="aggregate">
+              <span>TOTAL</span><strong>{{ comparisonLoad(selectedComparison, 'max_concurrency') }} 并发</strong><small>{{ qpsLabel(comparisonLoad(selectedComparison, 'target_qps')) }} · 同时活动 {{ comparisonActiveModels(selectedComparison) }} 个模型</small>
+            </article>
+          </div>
+        </section>
+        <section class="comparison-task-section">
+          <div class="panel-heading detail-heading">
+            <div><span>RUN STATUS</span><h3>子任务状态</h3></div><small>{{ finishedComparisonTasks }} / {{ selectedComparison.tasks.length }} 已结束</small>
+          </div>
+          <div class="comparison-task-list">
+            <article v-for="(task, index) in selectedComparison.tasks" :key="task.id">
+              <span class="state-lamp" :class="task.status"></span><code>M{{ String(index + 1).padStart(2, '0') }}</code><div><strong>{{ task.target_name }}</strong><small>{{ task.id }}</small></div><em :class="task.status">{{ statusLabel(task.status) }}</em><button class="text-link" type="button" @click="openComparisonTask(task)">
+                查看任务
+              </button>
+            </article>
+          </div>
+        </section>
+        <section class="comparison-metric-section">
+          <div class="panel-heading detail-heading">
+            <div><span>ALIGNED METRICS</span><h3>模型指标对齐表</h3></div><small>同计划、同负载、同样本顺序</small>
+          </div>
+          <div v-if="comparisonHasMetrics" class="comparison-metric-table">
+            <div class="comparison-metric-head">
+              <span>模型</span><span>状态</span><span>延迟 P95</span><span>TTFT P95</span><span>实际 QPS</span><span>输出 TPS</span><span>成功率</span><span>有效率</span><span>断言率</span><span>资源指标</span>
+            </div>
+            <div v-for="run in comparisonRuns" :key="run.task_id" class="comparison-metric-row">
+              <strong>{{ run.model || run.target_name }}</strong><em :class="run.status">{{ statusLabel(run.status) }}</em><span>{{ runMetric(run, 'latency', 'p95', 'seconds') }}</span><span>{{ runMetric(run, 'ttft', 'p95', 'seconds') }}</span><span>{{ runMetric(run, null, 'achieved_qps', 'number') }}</span><span>{{ runMetric(run, null, 'aggregate_output_tps', 'number') }}</span><span>{{ runRate(run, 'transport_successes') }}</span><span>{{ runRate(run, 'valid_responses') }}</span><span>{{ runRate(run, 'assertion_passes') }}</span><span>{{ resourceSummary(run) }}</span>
+            </div>
+          </div>
+          <div v-else class="inline-empty">
+            比较结果将在子任务结束后逐项写入；排队和运行阶段只显示状态与负载口径。
+          </div>
+          <p class="comparison-score-note">
+            本模块只并列展示原始性能、验证和资源观测指标，不生成不透明综合分。
+          </p>
+        </section>
+      </aside>
+    </div>
+
     <div v-if="selected" class="drawer-backdrop" @click.self="selected = null">
       <aside class="record-drawer" role="dialog" aria-modal="true" :aria-label="`${selected.name} 详情`">
         <button class="drawer-close" type="button" aria-label="关闭" @click="selected = null">
@@ -152,8 +247,8 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { api, reportDownloadUrl } from '../api/client'
 import AppShell from '../components/AppShell.vue'
 import LoadRuler from '../components/LoadRuler.vue'
@@ -161,6 +256,11 @@ import MetricReadout from '../components/MetricReadout.vue'
 import StateNotice from '../components/StateNotice.vue'
 
 const route = useRoute()
+const router = useRouter()
+const comparisons = ref([])
+const selectedComparison = ref(null)
+const comparisonError = ref('')
+let comparisonPoll = null
 const tasks = ref([]); const reports = ref([]); const selected = ref(null); const query = ref(''); const status = ref(''); const loading = ref(false); const error = ref('')
 const artifactNotice = ref(null)
 const generatingFormat = ref('')
@@ -180,6 +280,11 @@ const filtered = computed(() => tasks.value.filter(item => {
   const text = `${item.name} ${item.id} ${item.status} ${modelName(item)}`.toLowerCase()
   return !query.value || text.includes(query.value.toLowerCase())
 }))
+const comparisonResult = computed(() => selectedComparison.value && selectedComparison.value.result ? selectedComparison.value.result : {})
+const comparisonRuns = computed(() => Array.isArray(comparisonResult.value.runs) ? comparisonResult.value.runs : [])
+const comparisonHasMetrics = computed(() => comparisonRuns.value.some(run => run.metrics && Object.keys(run.metrics).length))
+const comparisonLoads = computed(() => Array.isArray(comparisonResult.value.per_model_loads) ? comparisonResult.value.per_model_loads : [])
+const finishedComparisonTasks = computed(() => selectedComparison.value ? selectedComparison.value.tasks.filter(item => ['completed', 'failed', 'cancelled', 'interrupted'].includes(item.status)).length : 0)
 const result = computed(() => selected.value && selected.value.result ? selected.value.result : {})
 const canGenerateReports = computed(() => Boolean(selected.value && selected.value.result))
 const timeSeries = computed(() => Array.isArray(result.value.time_series) ? result.value.time_series : [])
@@ -196,8 +301,52 @@ const recordSegments = computed(() => {
   return [{ name: '完整负载', detail: plan ? `${plan.concurrency || 1} 并发` : '已结束', weight: 1, kind: selected.value && selected.value.status === 'failed' ? 'danger' : 'load' }]
 })
 
-onMounted(async () => { await load(); if (route.query.task) { const item = tasks.value.find(task => task.id === route.query.task); if (item) openRecord(item) } })
-async function load() { loading.value = true; error.value = ''; try { tasks.value = await api.tasks() } catch (reason) { error.value = reason.message } finally { loading.value = false } }
+onMounted(async () => {
+  await load()
+  if (route.query.comparison) await openComparison(String(route.query.comparison), false)
+  else if (route.query.task) { const item = tasks.value.find(task => task.id === route.query.task); if (item) openRecord(item) }
+  comparisonPoll = window.setInterval(refreshActiveComparison, 3000)
+  window.addEventListener('keydown', handleComparisonKeydown)
+})
+onBeforeUnmount(() => {
+  if (comparisonPoll) window.clearInterval(comparisonPoll)
+  window.removeEventListener('keydown', handleComparisonKeydown)
+})
+async function load() {
+  loading.value = true
+  error.value = ''
+  try { [tasks.value, comparisons.value] = await Promise.all([api.tasks(), api.comparisons()]) }
+  catch (reason) { error.value = reason.message }
+  finally { loading.value = false }
+}
+async function openComparison(item, updateRoute = true) {
+  const comparisonId = typeof item === 'string' ? item : item.id
+  comparisonError.value = ''
+  selected.value = null
+  try {
+    selectedComparison.value = await api.comparison(comparisonId)
+    if (updateRoute) await router.replace({ query: { ...route.query, task: undefined, comparison: comparisonId } })
+  } catch (reason) { comparisonError.value = reason.message || '无法读取模型比较详情。' }
+}
+async function refreshActiveComparison() {
+  if (!selectedComparison.value || !['queued', 'running', 'stopping'].includes(selectedComparison.value.status)) return
+  try { selectedComparison.value = await api.comparison(selectedComparison.value.id); comparisonError.value = '' }
+  catch (reason) { comparisonError.value = reason.message || '无法刷新模型比较状态。' }
+}
+async function closeComparison() {
+  selectedComparison.value = null
+  comparisonError.value = ''
+  await router.replace({ query: { ...route.query, comparison: undefined } })
+}
+function handleComparisonKeydown(event) {
+  if (event.key === 'Escape' && selectedComparison.value) void closeComparison()
+}
+async function openComparisonTask(task) {
+  await closeComparison()
+  const item = tasks.value.find(candidate => candidate.id === task.id) || task
+  await openRecord(item)
+  await router.replace({ query: { ...route.query, comparison: undefined, task: task.id } })
+}
 async function openRecord(item) {
   artifactNotice.value = null
   baselineNotice.value = null
@@ -341,6 +490,14 @@ function applySavedTolerances(comparison) {
   if (percentMetric) baselineTolerancePercent.value = percentMetric.tolerance_percent
   if (rateMetric && typeof rateMetric.tolerance_absolute === 'number') baselineRateAbsolute.value = rateMetric.tolerance_absolute
 }
+function comparisonModeLabel(value) { return value === 'synchronous' ? '同步运行' : '顺序运行' }
+function resourceSemanticsLabel(value) { return value === 'shared' ? '共享资源' : '独立端点' }
+function comparisonLoad(item, key) { const aggregate = item && item.result && item.result.aggregate_load; const value = aggregate && aggregate[key]; return value === null || value === undefined ? '—' : value }
+function comparisonActiveModels(item) { return comparisonLoad(item, 'active_models') }
+function qpsLabel(value) { return typeof value === 'number' ? `目标 ${value.toFixed(1)} QPS` : '不限目标 QPS' }
+function runMetric(run, group, key, kind) { const metrics = run.metrics || {}; const value = group ? (metrics[group] || {})[key] : metrics[key]; if (typeof value !== 'number') return '—'; return kind === 'seconds' ? `${value.toFixed(3)}s` : value.toFixed(2) }
+function runRate(run, key) { const metrics = run.metrics || {}; const completed = Number(metrics.completed_requests) || 0; const value = Number(metrics[key]); return completed && Number.isFinite(value) ? `${(value / completed * 100).toFixed(1)}%` : '—' }
+function resourceSummary(run) { const metrics = run.metrics || {}; const resource = metrics.resource_metrics || metrics.resources || metrics.resource; if (!resource) return '未采集'; if (typeof resource === 'string') return resource; const values = []; if (typeof resource.gpu_utilization === 'number') values.push(`GPU ${resource.gpu_utilization.toFixed(0)}%`); if (typeof resource.cpu_percent === 'number') values.push(`CPU ${resource.cpu_percent.toFixed(0)}%`); if (typeof resource.memory_mb === 'number') values.push(`${resource.memory_mb.toFixed(0)} MB`); return values.join(' · ') || '已记录' }
 function metricLabel(value) { return ({ 'latency.mean': '端到端平均延迟', 'latency.p50': '端到端 P50', 'latency.p90': '端到端 P90', 'latency.p95': '端到端 P95', 'latency.p99': '端到端 P99', 'ttft.mean': 'TTFT 平均', 'ttft.p50': 'TTFT P50', 'ttft.p95': 'TTFT P95', 'ttft.p99': 'TTFT P99', 'generation_duration.mean': '生成时长平均', 'request_output_tps.mean': '单请求输出 TPS', achieved_qps: '实际 QPS', aggregate_output_tps: '聚合输出 TPS', error_rate: '错误率', valid_response_rate: '有效响应率', assertion_pass_rate: '断言通过率' })[value] || value }
 function metricValue(metricName, value) { if (typeof value !== 'number') return '—'; if (rateMetrics.includes(metricName)) return `${(value * 100).toFixed(2)}%`; if (metricName.startsWith('latency.') || metricName.startsWith('ttft.') || metricName.startsWith('generation_duration.')) return `${value.toFixed(3)}s`; return value.toFixed(2) }
 function deltaValue(item) { if (typeof item.absolute_delta !== 'number') return '—'; const prefix = item.absolute_delta > 0 ? '+' : ''; if (rateMetrics.includes(item.metric)) return `${prefix}${(item.absolute_delta * 100).toFixed(2)}pp`; if (item.metric.startsWith('latency.') || item.metric.startsWith('ttft.') || item.metric.startsWith('generation_duration.')) return `${prefix}${item.absolute_delta.toFixed(3)}s`; return `${prefix}${item.absolute_delta.toFixed(2)}` }
