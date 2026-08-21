@@ -143,6 +143,19 @@ input:focus, select:focus, textarea:focus { border-color: var(--teal); box-shado
 .inline-check { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; font-weight: 600; }
 .validation-console footer { display: flex; justify-content: space-between; gap: 14px; padding-top: 10px; border-top: 1px dashed var(--line-strong); }
 .validation-console footer small { color: var(--muted); text-align: right; }
+.threshold-console { display: grid; gap: 13px; padding: 16px; border: 1px solid #a6afb1; border-left: 4px solid var(--amber); background: #fbfaf4; }
+.threshold-console-head { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
+.threshold-console-head > div { display: grid; gap: 3px; }
+.threshold-console-head span, .threshold-console footer span { color: #976011; font: 700 9px Consolas, 'Courier New', monospace; letter-spacing: .14em; }
+.threshold-console-head h3 { margin: 0; color: var(--navy); font: 700 17px/1.2 Bahnschrift, 'Segoe UI Semibold', 'Microsoft YaHei', sans-serif; }
+.threshold-console-head > strong { padding: 5px 8px; border: 1px solid #c9a66b; color: #74470a; background: #fff6df; font: 700 11px Consolas, 'Courier New', monospace; }
+.threshold-rule-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.threshold-rule-list > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 9px 10px; border: 1px solid #d7c9ae; background: rgba(255, 255, 255, .72); }
+.threshold-rule-list span { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.threshold-rule-list strong { flex: none; color: var(--navy); font: 700 11px Consolas, 'Courier New', monospace; }
+.threshold-empty { margin: 0; padding: 10px 11px; border: 1px dashed #cbbd9f; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.threshold-console footer { display: flex; justify-content: space-between; gap: 14px; padding-top: 10px; border-top: 1px dashed #cbbd9f; }
+.threshold-console footer small { color: var(--muted); text-align: right; }
 .check-option { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 7px 9px; border: 1px solid var(--line); background: #fff; font-weight: 500; }
 .safety-readout { display: grid; grid-template-columns: 1fr auto; align-items: end; padding: 15px; border-left: 4px solid var(--teal); background: var(--navy); color: #fff; }
 .safety-readout span { color: #a9c2c6; font-size: 12px; }.safety-readout strong { grid-row: 1 / span 2; grid-column: 2; font: 700 30px Consolas, monospace; }.safety-readout small { color: #d7e4e5; }
@@ -273,12 +286,15 @@ input:focus, select:focus, textarea:focus { border-color: var(--teal); box-shado
   .aggregate-load { grid-template-columns: 1fr; }
   .aggregate-load strong { grid-column: 1; grid-row: auto; }
   .validation-basic-grid, .validation-advanced-grid { grid-template-columns: 1fr; }
+  .threshold-rule-list { grid-template-columns: 1fr; }
   .validation-wide { grid-column: 1; }
   .token-gate { grid-template-columns: 1fr 1fr; }
   .token-gate > span { grid-column: 1 / -1; }
   .token-gate > i { display: none; }
   .validation-console footer { align-items: flex-start; flex-direction: column; }
   .validation-console footer small { text-align: left; }
+  .threshold-console footer { align-items: flex-start; flex-direction: column; }
+  .threshold-console footer small { text-align: left; }
 }
 
 /* 模型比较记录：以实验台账对齐各模型负载、状态和原始指标。 */

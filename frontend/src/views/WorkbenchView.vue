@@ -241,6 +241,34 @@
           </p>
           <footer><span>ASSERTION SNAPSHOT</span><small>规则会随任务固化，模型比较中的所有目标复用同一组规则。</small></footer>
         </section>
+
+        <section class="threshold-console" aria-labelledby="performance-threshold-title">
+          <header class="threshold-console-head">
+            <div>
+              <span>QUALITY / LIMIT</span>
+              <h3 id="performance-threshold-title">
+                性能阈值
+              </h3>
+            </div>
+            <strong>{{ selectedThreshold ? `${selectedThreshold.rules.length} 项指标` : '未启用' }}</strong>
+          </header>
+          <label>阈值模板
+            <select v-model="form.threshold_id">
+              <option value="">不启用阈值，只记录原始指标</option>
+              <option v-for="item in thresholds" :key="item.id" :value="item.id">{{ item.name }} · {{ item.rules.length }} 项</option>
+            </select>
+          </label>
+          <div v-if="selectedThreshold" class="threshold-rule-list" aria-label="选中的性能阈值">
+            <div v-for="(rule, index) in selectedThreshold.rules" :key="`${rule.metric}-${index}`">
+              <span>{{ thresholdMetricLabel(rule.metric) }}</span>
+              <strong>{{ rule.operator }} {{ thresholdValueLabel(rule) }}</strong>
+            </div>
+          </div>
+          <p v-else class="threshold-empty">
+            可在“测试资源 → 阈值模板”中维护可复用规则；未选择时不会影响任务执行。
+          </p>
+          <footer><span>THRESHOLD SNAPSHOT</span><small>创建任务时固化模板名称和规则；后续修改模板不会改变历史任务。</small></footer>
+        </section>
       </section>
 
       <aside class="panel preflight-panel">
@@ -288,6 +316,7 @@ import StateNotice from '../components/StateNotice.vue'
 const router = useRouter()
 const configs = ref([])
 const datasets = ref([])
+const thresholds = ref([])
 const preflight = ref(null)
 const notice = ref(null)
 const needsConfirmation = ref(false)
@@ -311,6 +340,7 @@ const form = reactive({
   },
   plan: { plan_type: 'fixed_concurrency', concurrency: 4, total_requests: 40, warmup_seconds: 2, cooldown_seconds: 1, stages: [] },
   workload: { output_size: 128, dataset_id: '' },
+  threshold_id: '',
   validation: {
     non_empty: true,
     contains: '',
@@ -332,6 +362,7 @@ const form = reactive({
 const isComparison = computed(() => form.execution_mode === 'comparison')
 const isSynchronous = computed(() => isComparison.value && form.comparison.mode === 'synchronous')
 const selectedConfig = computed(() => configById(form.api_config_id))
+const selectedThreshold = computed(() => thresholds.value.find(item => item.id === form.threshold_id))
 const selectedTargetIds = computed(() => form.comparison.targets.map(target => target.api_config_id).filter(Boolean))
 const comparisonIssue = computed(() => {
   if (configs.value.length < 2) return '模型比较至少需要两个已保存的 API 配置。'
@@ -391,6 +422,7 @@ const preflightFingerprint = computed(() => JSON.stringify({
   comparison_mode: form.comparison.mode,
   plan: form.plan,
   workload: form.workload,
+  threshold_id: form.threshold_id,
   validation: form.validation,
   risk_confirmed: form.risk_confirmed
 }))
@@ -399,7 +431,7 @@ watch(preflightFingerprint, () => { preflight.value = null; notice.value = null 
 watch(() => form.comparison.mode, mode => { if (mode === 'sequential') form.comparison.confirm_synchronous = false })
 onMounted(async () => {
   try {
-    [configs.value, datasets.value] = await Promise.all([api.configs(), api.datasets()])
+    [configs.value, datasets.value, thresholds.value] = await Promise.all([api.configs(), api.datasets(), api.thresholds()])
     const preferred = configs.value.find(item => item.is_default) || configs.value[0]
     if (preferred) form.api_config_id = preferred.id
     form.comparison.targets.forEach((target, index) => { target.api_config_id = configs.value[index]?.id || '' })
@@ -418,6 +450,23 @@ function removeComparisonTarget(index) {
   if (form.comparison.targets.length > 2) form.comparison.targets.splice(index, 1)
 }
 function formatNumber(value) { return Number.isInteger(value) ? String(value) : Number(value).toFixed(1) }
+function thresholdMetricLabel(metric) {
+  return {
+    'latency.p95': 'P95 端到端延迟',
+    'ttft.p95': 'TTFT P95',
+    error_rate: '错误率',
+    valid_response_rate: '有效响应率',
+    assertion_pass_rate: '断言通过率',
+    achieved_qps: '实际 QPS',
+    aggregate_output_tps: '聚合输出 TPS'
+  }[metric] || metric
+}
+function thresholdValueLabel(rule) {
+  const value = Number(rule.value)
+  if (['error_rate', 'valid_response_rate', 'assertion_pass_rate'].includes(rule.metric)) return `${formatNumber(value * 100)}%`
+  if (rule.metric.startsWith('latency.') || rule.metric.startsWith('ttft.')) return `${formatNumber(value)} 秒`
+  return formatNumber(value)
+}
 function normalisePlan() {
   if (form.plan.plan_type === 'stepped' && !form.plan.stages.length) form.plan.stages = [
     { name: '探测', concurrency: 1, requests: 10 }, { name: '工作区', concurrency: 4, requests: 40 }, { name: '上探', concurrency: 8, requests: 60 }
@@ -480,6 +529,7 @@ function commonPayload() {
     plan: { ...form.plan },
     workload: { ...form.workload, dataset_id: form.workload.dataset_id || undefined },
     assertions: assertions.value,
+    threshold_id: form.threshold_id || undefined,
     stream: form.stream,
     formats: form.formats,
     risk_confirmed: form.risk_confirmed
