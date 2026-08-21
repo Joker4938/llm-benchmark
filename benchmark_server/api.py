@@ -185,12 +185,45 @@ class BaselineInput(BaseModel):
         return value
 
 
+class ComparisonTargetInput(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    api_config_id: str | None = None
+    endpoint: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def validate_endpoint(self) -> "ComparisonTargetInput":
+        if bool(self.api_config_id) == bool(self.endpoint):
+            raise ValueError("每个比较目标必须且只能提供 api_config_id 或 endpoint")
+        return self
+
+
 class ComparisonInput(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     mode: Literal["sequential", "synchronous"] = "sequential"
     resource_semantics: Literal["independent", "shared"]
-    task_ids: list[str] = Field(min_length=2)
+    task_ids: list[str] | None = Field(default=None, min_length=2, max_length=20)
+    targets: list[ComparisonTargetInput] | None = Field(default=None, min_length=2, max_length=10)
+    plan: dict[str, Any] | None = None
+    workload: dict[str, Any] = Field(default_factory=dict)
+    stream: bool = True
+    formats: list[Literal["json", "jsonl.gz", "events.jsonl.gz", "html", "xlsx", "csv"]] = Field(
+        default_factory=lambda: ["json", "jsonl.gz"]
+    )
+    priority: int = Field(default=0, ge=-100, le=100)
+    risk_confirmed: bool = False
     confirm_synchronous: bool = False
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "ComparisonInput":
+        if bool(self.task_ids) == bool(self.targets):
+            raise ValueError("必须且只能提供 task_ids 或 targets")
+        if self.targets and self.plan is None:
+            raise ValueError("创建模型比较任务时必须提供 plan")
+        if self.targets:
+            names = [target.name for target in self.targets]
+            if len(names) != len(set(names)):
+                raise ValueError("比较目标名称不能重复")
+        return self
 
 
 class ReportGenerateInput(BaseModel):
@@ -424,10 +457,9 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             "estimated_max_concurrency": max([plan.concurrency, *(item.concurrency for item in plan.stages)]),
         }
 
-    @app.post("/api/tasks", status_code=202)
-    def create_task(value: TaskInput, user: str = Depends(current_user)):
-        preflight(value, user)
+    def prepare_task_payload(value: TaskInput) -> dict[str, Any]:
         payload = value.model_dump(exclude={"priority", "risk_confirmed"})
+        payload["workload"] = {"seed": 1, **payload.get("workload", {})}
         config_id = value.api_config_id
         if config_id:
             try:
@@ -453,9 +485,18 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 "timeout_seconds": endpoint.get("timeout_seconds", 60),
                 "is_default": False,
             })
-            config_id = config["id"]
-            payload["api_config_id"] = config_id
-            payload["endpoint"] = {key: endpoint[key] for key in ("base_url", "model", "verify_tls", "timeout_seconds") if key in endpoint}
+            payload["api_config_id"] = config["id"]
+            payload["endpoint"] = {
+                key: endpoint[key]
+                for key in ("base_url", "model", "verify_tls", "timeout_seconds")
+                if key in endpoint
+            }
+        return payload
+
+    @app.post("/api/tasks", status_code=202)
+    def create_task(value: TaskInput, user: str = Depends(current_user)):
+        preflight(value, user)
+        payload = prepare_task_payload(value)
         task_id = repository.create_task(value.name, payload, priority=value.priority)
         return repository.get_task(task_id)
 
@@ -650,9 +691,51 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     def create_comparison(value: ComparisonInput, user: str = Depends(current_user)):
         if value.mode == "synchronous" and not value.confirm_synchronous:
             raise HTTPException(422, "同步比较必须显式确认总负载叠加")
-        for task_id in value.task_ids:
-            get_task(task_id, user)
-        item_id = repository.save_comparison(value.model_dump(exclude={"confirm_synchronous"}))
+        if value.task_ids:
+            for task_id in value.task_ids:
+                get_task(task_id, user)
+            item_id = repository.save_comparison({
+                "name": value.name,
+                "mode": value.mode,
+                "resource_semantics": value.resource_semantics,
+                "task_ids": value.task_ids,
+            })
+            return repository.get_comparison(item_id)
+
+        plan_data = dict(value.plan or {})
+        workload = {"seed": 1, **value.workload}
+        task_specs = []
+        targets = value.targets or []
+        for target in targets:
+            task_input = TaskInput(
+                name=f"{value.name} - {target.name}",
+                api_config_id=target.api_config_id,
+                endpoint=target.endpoint,
+                plan=plan_data,
+                workload=workload,
+                stream=value.stream,
+                formats=value.formats,
+                priority=value.priority,
+                risk_confirmed=value.risk_confirmed,
+            )
+            preflight(task_input, user)
+            task_specs.append({
+                "name": task_input.name,
+                "target_name": target.name,
+                "priority": value.priority,
+                "payload": prepare_task_payload(task_input),
+            })
+        plan = _plan(plan_data)
+        result = _comparison_metadata(value, plan, targets)
+        item_id = repository.create_comparison_tasks(
+            {
+                "name": value.name,
+                "mode": value.mode,
+                "resource_semantics": value.resource_semantics,
+                "result": result,
+            },
+            task_specs,
+        )
         return repository.get_comparison(item_id)
 
     @app.get("/api/reports")
@@ -827,6 +910,47 @@ def _estimated_requests(plan: BenchmarkPlan) -> int | None:
     if plan.stages and all(item.requests is not None for item in plan.stages):
         return sum(int(item.requests or 0) for item in plan.stages)
     return plan.total_requests
+
+
+def _comparison_metadata(
+    value: ComparisonInput,
+    plan: BenchmarkPlan,
+    targets: list[ComparisonTargetInput],
+) -> dict[str, Any]:
+    """生成可解释的模型比较负载元数据，不计算不透明综合分。"""
+
+    concurrency = max([plan.concurrency, *(stage.concurrency for stage in plan.stages)])
+    qps_values = [
+        qps for qps in [plan.target_qps, *(stage.target_qps for stage in plan.stages)]
+        if qps is not None
+    ]
+    target_qps = max(qps_values) if qps_values else None
+    per_model_loads = [
+        {
+            "target_name": target.name,
+            "max_concurrency": concurrency,
+            "target_qps": target_qps,
+            "estimated_requests": _estimated_requests(plan),
+        }
+        for target in targets
+    ]
+    multiplier = len(targets) if value.mode == "synchronous" else 1
+    warning = None
+    if value.resource_semantics == "shared":
+        warning = "结果包含共享资源竞争效应，不应解释为彼此独立的模型容量。"
+    return {
+        "schema_version": "1.0",
+        "comparison_mode": value.mode,
+        "resource_semantics": value.resource_semantics,
+        "same_workload_order": True,
+        "per_model_loads": per_model_loads,
+        "aggregate_load": {
+            "active_models": multiplier,
+            "max_concurrency": concurrency * multiplier,
+            "target_qps": target_qps * multiplier if target_qps is not None else None,
+        },
+        "warning": warning,
+    }
 
 
 def _safe_report_path(root: Path, relative: str) -> Path:

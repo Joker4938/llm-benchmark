@@ -6,7 +6,7 @@ import json
 import os
 import uuid
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from benchmark_core.redaction import redact
 
@@ -427,6 +427,55 @@ class Repository:
             raise KeyError(plan_id)
         return {"id": row["id"], "name": row["name"], "plan": json.loads(row["plan_json"]), "updated_at": row["updated_at"]}
 
+    def create_comparison_tasks(
+        self,
+        value: Mapping[str, Any],
+        tasks: Sequence[Mapping[str, Any]],
+    ) -> str:
+        """原子创建模型比较及其按目标拆分的子任务。"""
+
+        if len(tasks) < 2:
+            raise ValueError("模型比较至少需要两个子任务")
+        comparison_id = uuid.uuid4().hex
+        task_ids = [uuid.uuid4().hex for _ in tasks]
+        now = utc_now()
+        with self.database.transaction(immediate=True) as connection:
+            connection.execute(
+                """INSERT INTO comparisons(
+                    id,name,mode,resource_semantics,task_ids_json,result_json,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    comparison_id,
+                    str(value["name"]),
+                    str(value["mode"]),
+                    str(value["resource_semantics"]),
+                    _json(task_ids),
+                    _json(redact(value.get("result"))) if value.get("result") is not None else None,
+                    now,
+                    now,
+                ),
+            )
+            for index, (task_id, task) in enumerate(zip(task_ids, tasks)):
+                connection.execute(
+                    """INSERT INTO tasks(
+                        id,name,status,priority,payload_json,created_at,updated_at,
+                        comparison_id,comparison_index,comparison_target_name
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        task_id,
+                        str(task["name"]),
+                        "queued",
+                        int(task.get("priority", 0)),
+                        _json(task["payload"]),
+                        now,
+                        now,
+                        comparison_id,
+                        index,
+                        str(task.get("target_name") or task["name"]),
+                    ),
+                )
+        return comparison_id
+
     def save_comparison(self, value: Mapping[str, Any], comparison_id: str | None = None) -> str:
         comparison_id = comparison_id or uuid.uuid4().hex
         now = utc_now()
@@ -459,10 +508,46 @@ class Repository:
             row = connection.execute("SELECT * FROM comparisons WHERE id=?", (comparison_id,)).fetchone()
         if not row:
             raise KeyError(comparison_id)
-        return {"id": row["id"], "name": row["name"], "mode": row["mode"],
-                "resource_semantics": row["resource_semantics"], "task_ids": json.loads(row["task_ids_json"]),
-                "result": json.loads(row["result_json"]) if row["result_json"] else None,
-                "created_at": row["created_at"], "updated_at": row["updated_at"]}
+        task_ids = json.loads(row["task_ids_json"])
+        tasks = [self.get_task(task_id) for task_id in task_ids]
+        result = json.loads(row["result_json"]) if row["result_json"] else None
+        if result is not None:
+            result["runs"] = [
+                {
+                    "task_id": task["id"],
+                    "target_name": task["comparison_target_name"] or task["name"],
+                    "status": task["status"],
+                    "model": (task.get("result") or {}).get("request", {}).get("model")
+                    or task.get("payload", {}).get("endpoint", {}).get("model"),
+                    "metrics": task.get("result"),
+                    "error_message": task.get("error_message"),
+                    "stopped_reason": task.get("stopped_reason"),
+                }
+                for task in tasks
+            ]
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "mode": row["mode"],
+            "resource_semantics": row["resource_semantics"],
+            "task_ids": task_ids,
+            "status": _comparison_status(tasks),
+            "tasks": [
+                {
+                    "id": task["id"],
+                    "name": task["name"],
+                    "target_name": task["comparison_target_name"] or task["name"],
+                    "status": task["status"],
+                    "queue_position": task.get("queue_position"),
+                    "started_at": task.get("started_at"),
+                    "finished_at": task.get("finished_at"),
+                }
+                for task in tasks
+            ],
+            "result": result,
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
 
     def list_comparisons(self) -> list[dict[str, Any]]:
         with self.database.connect() as connection:
@@ -567,3 +652,25 @@ class Repository:
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def _comparison_status(tasks: Sequence[Mapping[str, Any]]) -> str:
+    """根据子任务状态生成稳定的比较组状态。"""
+
+    if not tasks:
+        return "created"
+    statuses = [str(task["status"]) for task in tasks]
+    terminal = {"completed", "failed", "cancelled", "interrupted"}
+    if all(status in terminal for status in statuses):
+        if all(status == "completed" for status in statuses):
+            return "completed"
+        if "failed" in statuses:
+            return "failed"
+        if "cancelled" in statuses:
+            return "cancelled"
+        return "interrupted"
+    if any(status in {"running", "stopping"} for status in statuses):
+        return "running"
+    if any(task.get("started_at") for task in tasks):
+        return "running"
+    return "queued"

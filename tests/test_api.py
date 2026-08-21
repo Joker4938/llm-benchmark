@@ -381,6 +381,113 @@ class ReportAndDiagnosticApiTests(ApiTestCase):
         self.assertNotIn(self.settings.password, text)
         self.assertNotIn(self.settings.session_secret, text)
 
+    def test_sequential_comparison_creates_tasks_with_same_workload_snapshot(self):
+        payload = {
+            'name': '模型顺序比较',
+            'mode': 'sequential',
+            'resource_semantics': 'independent',
+            'targets': [
+                {
+                    'name': '模型 A',
+                    'endpoint': {
+                        'base_url': 'http://model-a.local/v1',
+                        'model': 'model-a',
+                        'api_key': 'secret-a',
+                    },
+                },
+                {
+                    'name': '模型 B',
+                    'endpoint': {
+                        'base_url': 'http://model-b.local/v1',
+                        'model': 'model-b',
+                        'api_key': 'secret-b',
+                    },
+                },
+            ],
+            'plan': {
+                'plan_type': 'fixed_concurrency',
+                'concurrency': 3,
+                'total_requests': 8,
+                'target_qps': 2.5,
+            },
+            'workload': {'prompt_type': 'structured', 'output_size': 64, 'seed': 19},
+            'formats': ['json'],
+        }
+
+        created = self.client.post('/api/comparisons', json=payload)
+
+        self.assertEqual(201, created.status_code, created.text)
+        comparison = created.json()
+        self.assertEqual('queued', comparison['status'])
+        self.assertEqual(2, len(comparison['task_ids']))
+        self.assertTrue(comparison['result']['same_workload_order'])
+        self.assertEqual(3, comparison['result']['aggregate_load']['max_concurrency'])
+        tasks = [self.repository.get_task(task_id) for task_id in comparison['task_ids']]
+        self.assertEqual([0, 1], [task['comparison_index'] for task in tasks])
+        self.assertEqual(
+            [tasks[0]['payload']['workload'], tasks[1]['payload']['workload']],
+            [payload['workload'], payload['workload']],
+        )
+        self.assertNotIn('secret-a', created.text)
+        self.assertNotIn('secret-b', created.text)
+
+        first = self.repository.claim_next_task_batch('worker')[0]
+        self.repository.finish_task(
+            first['id'],
+            first['claim_token'],
+            status='completed',
+            result=self.comparable_result(model='model-a'),
+        )
+        second = self.repository.claim_next_task_batch('worker')[0]
+        self.repository.finish_task(
+            second['id'],
+            second['claim_token'],
+            status='completed',
+            result=self.comparable_result(model='model-b'),
+        )
+        finished = self.client.get(f"/api/comparisons/{comparison['id']}").json()
+        self.assertEqual('completed', finished['status'])
+        self.assertEqual(
+            ['model-a', 'model-b'],
+            [run['model'] for run in finished['result']['runs']],
+        )
+        self.assertTrue(all(run['status'] == 'completed' for run in finished['result']['runs']))
+
+    def test_synchronous_comparison_reports_per_model_and_aggregate_load(self):
+        payload = {
+            'name': '共享资源同步比较',
+            'mode': 'synchronous',
+            'resource_semantics': 'shared',
+            'confirm_synchronous': True,
+            'targets': [
+                {
+                    'name': '模型 A',
+                    'endpoint': {'base_url': 'http://shared.local/v1', 'model': 'model-a'},
+                },
+                {
+                    'name': '模型 B',
+                    'endpoint': {'base_url': 'http://shared.local/v1', 'model': 'model-b'},
+                },
+            ],
+            'plan': {
+                'plan_type': 'constant_rate',
+                'concurrency': 4,
+                'total_requests': 10,
+                'target_qps': 6,
+            },
+        }
+
+        created = self.client.post('/api/comparisons', json=payload)
+
+        self.assertEqual(201, created.status_code, created.text)
+        result = created.json()['result']
+        self.assertEqual(2, len(result['per_model_loads']))
+        self.assertEqual(8, result['aggregate_load']['max_concurrency'])
+        self.assertEqual(12, result['aggregate_load']['target_qps'])
+        self.assertEqual(2, result['aggregate_load']['active_models'])
+        self.assertIn('共享资源竞争效应', result['warning'])
+        self.assertNotIn('score', result)
+
     def test_synchronous_comparison_requires_confirmation(self):
         first = self.completed_task()
         second = self.completed_task()
