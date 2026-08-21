@@ -610,7 +610,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         try:
             return repository.get_task_baseline(task_id)
         except KeyError:
-            raise HTTPException(404, "当前任务尚未选择历史基线")
+            return None
 
     @app.put("/api/tasks/{task_id}/baseline")
     def save_baseline(task_id: str, value: BaselineInput, user: str = Depends(current_user)):

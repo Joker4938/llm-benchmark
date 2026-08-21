@@ -419,7 +419,9 @@ class ReportAndDiagnosticApiTests(ApiTestCase):
         self.assertEqual(baseline_id, fetched.json()['baseline_task_id'])
 
         self.assertEqual(204, self.client.delete(f'/api/tasks/{current_id}/baseline').status_code)
-        self.assertEqual(404, self.client.get(f'/api/tasks/{current_id}/baseline').status_code)
+        empty = self.client.get(f'/api/tasks/{current_id}/baseline')
+        self.assertEqual(200, empty.status_code)
+        self.assertIsNone(empty.json())
 
     def test_baseline_rejects_self_missing_result_and_incompatible_task(self):
         baseline_id = self.completed_task('历史基线', self.comparable_result())
