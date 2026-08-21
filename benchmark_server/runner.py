@@ -5,7 +5,7 @@ from __future__ import annotations
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from benchmark_core import (
     BenchmarkPlan,
@@ -15,7 +15,9 @@ from benchmark_core import (
     OpenAIChatClient,
     PlanType,
     RequestConfig,
+    RequestSample,
     StageConfig,
+    TimeWindowMetrics,
     WorkloadDimensions,
     aggregate_time_windows,
     build_summary,
@@ -23,10 +25,66 @@ from benchmark_core import (
     custom_dataset,
     load_jsonl,
     sample_records,
+    to_jsonable,
     write_report_bundle,
 )
+from benchmark_core.redaction import redact
 
 from .storage import Repository
+
+
+def build_web_result_details(
+    samples: Sequence[RequestSample],
+    windows: Sequence[TimeWindowMetrics],
+    *,
+    failure_limit: int = 20,
+) -> dict[str, Any]:
+    """构建供 Web 历史详情使用的脱敏时间序列和失败样本。"""
+
+    failed = [sample for sample in samples if _is_failed_sample(sample)]
+    return {
+        "time_series": to_jsonable(windows),
+        "failed_sample_total": len(failed),
+        "failed_samples": [_failed_sample_record(sample) for sample in failed[:failure_limit]],
+    }
+
+
+def _is_failed_sample(sample: RequestSample) -> bool:
+    return bool(
+        sample.error
+        or not sample.transport_success
+        or not sample.protocol_valid
+        or sample.assertion_passed is False
+    )
+
+
+def _failed_sample_record(sample: RequestSample) -> dict[str, Any]:
+    if sample.error:
+        category = sample.error.category.value
+        message = redact(sample.error.message)
+        retryable = sample.error.retryable
+    elif sample.assertion_passed is False:
+        category = "assertion"
+        message = "响应断言未通过"
+        retryable = False
+    elif not sample.protocol_valid:
+        category = "protocol"
+        message = "响应不符合 OpenAI Chat Completions 协议"
+        retryable = False
+    else:
+        category = "transport"
+        message = "请求未成功完成"
+        retryable = True
+    return {
+        "request_id": sample.request_id,
+        "started_at_offset": sample.started_at_offset,
+        "status_code": sample.status_code,
+        "category": category,
+        "message": message,
+        "retryable": retryable,
+        "latency": sample.timing.latency if sample.timing else None,
+        "ttft": sample.timing.ttft if sample.timing else None,
+    }
 
 
 class BenchmarkTaskRunner:
@@ -115,6 +173,7 @@ class BenchmarkTaskRunner:
                 for item in artifacts
             ],
             "stopped_reason": result.stopped_reason,
+            **build_web_result_details(result.samples, windows),
         })
         return value
 
