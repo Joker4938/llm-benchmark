@@ -12,10 +12,19 @@
         <div class="panel-heading">
           <span>ENDPOINTS</span><h2>API 配置</h2>
         </div>
-        <article v-for="item in configs" :key="item.id" class="resource-item">
-          <div><strong>{{ item.name }}</strong><span>{{ item.model }}</span><small>{{ item.base_url }}</small></div><code>{{ item.api_key }}</code><button type="button" class="icon-button" aria-label="删除配置" @click="remove('config', item)">
-            ×
-          </button>
+        <article v-for="item in configs" :key="item.id" class="resource-item" :class="{ editing: editingConfigId === item.id }">
+          <div class="resource-summary">
+            <strong>{{ item.name }}</strong><span>{{ item.model }}</span><small>{{ item.base_url }}</small>
+          </div>
+          <code>{{ item.api_key }}</code>
+          <div class="resource-actions">
+            <button type="button" class="secondary-button compact-button" :aria-label="`编辑配置 ${item.name}`" @click="editConfig(item)">
+              编辑
+            </button>
+            <button type="button" class="icon-button" :aria-label="`删除配置 ${item.name}`" @click="remove('config', item)">
+              ×
+            </button>
+          </div>
         </article>
         <p v-if="!configs.length" class="inline-empty">
           还没有连接配置。保存后 API Key 会以安装级密钥加密。
@@ -23,14 +32,21 @@
       </section>
       <form class="panel resource-form" @submit.prevent="saveConfig">
         <div class="panel-heading">
-          <span>NEW ENDPOINT</span><h2>保存连接</h2>
+          <span>{{ editingConfigId ? 'EDIT ENDPOINT' : 'NEW ENDPOINT' }}</span><h2>{{ editingConfigId ? '编辑连接' : '保存连接' }}</h2>
         </div>
-        <label>配置名称<input v-model.trim="configForm.name" required></label><label>Base URL<input v-model.trim="configForm.base_url" placeholder="http://model-server/v1" required></label><label>模型名称<input v-model.trim="configForm.model" required></label><label>API Key<input v-model="configForm.api_key" type="password" autocomplete="new-password"><small>保存后仅显示掩码；留空表示服务端不需要 Key。</small></label>
+        <StateNotice v-if="editingConfigId" tone="info" title="正在编辑已保存连接" message="只修改需要调整的字段；API Key 留空时会保留原密钥。" />
+        <label>配置名称<input v-model.trim="configForm.name" required></label><label>Base URL<input v-model.trim="configForm.base_url" placeholder="http://model-server/v1" required></label><label>模型名称<input v-model.trim="configForm.model" required></label><label>API Key<input v-model="configForm.api_key" type="password" autocomplete="new-password" :placeholder="editingConfigId ? '留空保持原 API Key' : '服务端不需要时可留空'"><small>{{ editingConfigId ? '留空保持原 API Key；输入新值才会替换。' : '保存后仅显示掩码；留空表示服务端不需要 Key。' }}</small></label>
         <div class="field-row">
           <label>超时（秒）<input v-model.number="configForm.timeout_seconds" type="number" min="1" max="3600"></label><label class="toggle-label"><input v-model="configForm.verify_tls" type="checkbox"><span>校验 TLS 证书</span></label>
-        </div><label class="toggle-label"><input v-model="configForm.is_default" type="checkbox"><span>设为默认连接</span></label><button class="primary-button" type="submit">
-          加密保存连接
-        </button>
+        </div><label class="toggle-label"><input v-model="configForm.is_default" type="checkbox"><span>设为默认连接</span></label>
+        <div class="form-actions">
+          <button class="primary-button" type="submit" :disabled="savingConfig">
+            {{ savingConfig ? '正在保存…' : editingConfigId ? '保存连接修改' : '加密保存连接' }}
+          </button>
+          <button v-if="editingConfigId" class="secondary-button" type="button" :disabled="savingConfig" @click="cancelConfigEdit">
+            取消编辑
+          </button>
+        </div>
       </form>
     </div>
 
@@ -123,6 +139,8 @@ import AppShell from '../components/AppShell.vue'
 import StateNotice from '../components/StateNotice.vue'
 
 const tab = ref('configs'); const configs = ref([]); const datasets = ref([]); const plans = ref([]); const thresholds = ref([]); const notice = ref(null)
+const editingConfigId = ref('')
+const savingConfig = ref(false)
 const tabs = [{ id: 'configs', label: 'API 配置' }, { id: 'datasets', label: '数据集' }, { id: 'plans', label: '计划模板' }, { id: 'thresholds', label: '阈值模板' }]
 const counts = computed(() => ({ configs: configs.value.length, datasets: datasets.value.length, plans: plans.value.length, thresholds: thresholds.value.length }))
 const configForm = reactive({ name: '', base_url: '', model: '', api_key: '', verify_tls: true, timeout_seconds: 60, is_default: false })
@@ -135,7 +153,44 @@ async function load() {
   try { [configs.value, datasets.value, plans.value, thresholds.value] = await Promise.all([api.configs(), api.datasets(), api.plans(), api.thresholds()]) }
   catch (error) { showError(error) }
 }
-async function saveConfig() { try { await api.createConfig(configForm); Object.assign(configForm, { name: '', base_url: '', model: '', api_key: '', verify_tls: true, timeout_seconds: 60, is_default: false }); await load(); showSuccess('连接已加密保存') } catch (error) { showError(error) } }
+async function saveConfig() {
+  savingConfig.value = true
+  try {
+    const payload = { ...configForm }
+    if (editingConfigId.value && payload.api_key === '') payload.api_key = null
+    if (editingConfigId.value) await api.updateConfig(editingConfigId.value, payload)
+    else await api.createConfig(payload)
+    const message = editingConfigId.value ? '连接修改已保存，未填写的 API Key 保持不变' : '连接已加密保存'
+    resetConfigForm()
+    await load()
+    showSuccess(message)
+  } catch (error) {
+    showError(error)
+  } finally {
+    savingConfig.value = false
+  }
+}
+function editConfig(item) {
+  editingConfigId.value = item.id
+  Object.assign(configForm, {
+    name: item.name,
+    base_url: item.base_url,
+    model: item.model,
+    api_key: '',
+    verify_tls: item.verify_tls,
+    timeout_seconds: item.timeout_seconds,
+    is_default: item.is_default
+  })
+  notice.value = null
+}
+function cancelConfigEdit() {
+  resetConfigForm()
+  showSuccess('已取消编辑，连接配置未发生变化')
+}
+function resetConfigForm() {
+  editingConfigId.value = ''
+  Object.assign(configForm, { name: '', base_url: '', model: '', api_key: '', verify_tls: true, timeout_seconds: 60, is_default: false })
+}
 async function saveDataset() { try { await api.createDataset(datasetForm); datasetForm.name = ''; await load(); showSuccess('数据集已校验并保存') } catch (error) { showError(error) } }
 async function savePlan() { try { await api.createPlan({ name: planForm.name, plan: { name: planForm.name, plan_type: 'fixed_concurrency', concurrency: planForm.concurrency, total_requests: planForm.total_requests, warmup_seconds: planForm.warmup_seconds, cooldown_seconds: planForm.cooldown_seconds } }); planForm.name = ''; await load(); showSuccess('计划模板已保存') } catch (error) { showError(error) } }
 async function saveThreshold() { try { await api.createThreshold({ name: thresholdForm.name, rules: [{ metric: thresholdForm.metric, operator: thresholdForm.operator, value: thresholdForm.value }] }); thresholdForm.name = ''; await load(); showSuccess('阈值模板已保存') } catch (error) { showError(error) } }
@@ -146,6 +201,7 @@ async function remove(type, item) {
     if (type === 'dataset') await api.deleteDataset(item.id)
     if (type === 'plan') await api.deletePlan(item.id)
     if (type === 'threshold') await api.deleteThreshold(item.id)
+    if (type === 'config' && editingConfigId.value === item.id) resetConfigForm()
     await load(); showSuccess('资源已删除')
   } catch (error) { showError(error) }
 }
