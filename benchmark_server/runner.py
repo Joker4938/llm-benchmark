@@ -19,6 +19,8 @@ from benchmark_core import (
     RequestConfig,
     RequestSample,
     StageConfig,
+    ThresholdRule,
+    ThresholdStatus,
     TimeWindowMetrics,
     WorkloadDimensions,
     aggregate_time_windows,
@@ -26,6 +28,7 @@ from benchmark_core import (
     build_summary,
     builtin_dataset,
     custom_dataset,
+    evaluate_thresholds,
     load_jsonl,
     sample_records,
     to_jsonable,
@@ -59,6 +62,41 @@ def _is_failed_sample(sample: RequestSample) -> bool:
         or not sample.protocol_valid
         or sample.assertion_passed is False
     )
+
+
+def build_threshold_evaluation(
+    summary: Mapping[str, Any],
+    snapshot: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """按任务中固化的模板逐项评估阈值，并汇总透明结论。"""
+
+    if not snapshot:
+        return None
+    rules = tuple(
+        ThresholdRule(
+            metric=str(item["metric"]),
+            operator=str(item["operator"]),
+            value=float(item["value"]),
+        )
+        for item in snapshot.get("rules", ())
+    )
+    results = evaluate_thresholds(summary, rules)
+    counts = {status.value: 0 for status in ThresholdStatus}
+    for result in results:
+        counts[result.status.value] += 1
+    if counts[ThresholdStatus.FAILED.value]:
+        status = ThresholdStatus.FAILED
+    elif counts[ThresholdStatus.NOT_EVALUABLE.value]:
+        status = ThresholdStatus.NOT_EVALUABLE
+    else:
+        status = ThresholdStatus.PASSED
+    return {
+        "template_id": snapshot.get("template_id"),
+        "name": str(snapshot.get("name") or ""),
+        "status": status.value,
+        "counts": counts,
+        "results": [result.to_dict() for result in results],
+    }
 
 
 def _failed_sample_record(sample: RequestSample) -> dict[str, Any]:
@@ -178,6 +216,9 @@ class BenchmarkTaskRunner:
                 "sha256": artifact.sha256,
             })
         value = summary.to_dict()
+        threshold_evaluation = build_threshold_evaluation(
+            value, payload.get("thresholds")
+        )
         value.update({
             "workload": {
                 "dataset": dataset.name,
@@ -200,6 +241,8 @@ class BenchmarkTaskRunner:
             "stopped_reason": result.stopped_reason,
             **build_web_result_details(result.samples, windows),
         })
+        if threshold_evaluation:
+            value["thresholds"] = threshold_evaluation
         return value
 
     def _dataset(self, workload: Mapping[str, Any], dimensions: WorkloadDimensions):

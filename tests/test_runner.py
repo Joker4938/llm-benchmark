@@ -14,7 +14,11 @@ from benchmark_core import (
     aggregate_time_windows,
 )
 from benchmark_server.database import Database
-from benchmark_server.runner import BenchmarkTaskRunner, build_web_result_details
+from benchmark_server.runner import (
+    BenchmarkTaskRunner,
+    build_threshold_evaluation,
+    build_web_result_details,
+)
 from benchmark_server.security import SecretBox
 from benchmark_server.storage import Repository
 
@@ -81,6 +85,47 @@ class WebResultDetailsTests(unittest.TestCase):
 
         self.assertEqual("assertion", details["failed_samples"][0]["category"])
         self.assertEqual("响应断言未通过", details["failed_samples"][0]["message"])
+
+
+class ThresholdEvaluationTests(unittest.TestCase):
+    def test_results_include_pass_fail_and_not_evaluable_counts(self):
+        summary = {
+            "completed_requests": 10,
+            "transport_successes": 9,
+            "valid_responses": 8,
+            "assertion_passes": 8,
+            "latency": {"p95": 1.5},
+            "ttft": {},
+            "generation_duration": {},
+            "request_output_tps": {},
+            "achieved_qps": 5.0,
+            "aggregate_output_tps": 100.0,
+        }
+        snapshot = {
+            "template_id": "delivery",
+            "name": "交付门槛",
+            "rules": [
+                {"metric": "latency.p95", "operator": "<=", "value": 2.0},
+                {"metric": "error_rate", "operator": "<=", "value": 0.05},
+                {"metric": "generator.cpu_percent", "operator": "<=", "value": 90.0},
+            ],
+        }
+
+        evaluation = build_threshold_evaluation(summary, snapshot)
+
+        self.assertEqual("delivery", evaluation["template_id"])
+        self.assertEqual("交付门槛", evaluation["name"])
+        self.assertEqual("failed", evaluation["status"])
+        self.assertEqual(
+            {"passed": 1, "failed": 1, "not_evaluable": 1},
+            evaluation["counts"],
+        )
+        self.assertEqual(1.5, evaluation["results"][0]["observed"])
+        self.assertEqual(0.1, evaluation["results"][1]["observed"])
+        self.assertIsNone(evaluation["results"][2]["observed"])
+
+    def test_no_threshold_snapshot_does_not_add_an_evaluation(self):
+        self.assertIsNone(build_threshold_evaluation({}, None))
 
 
 class FakeOpenAIClient:
@@ -150,6 +195,54 @@ class BenchmarkTaskRunnerTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(7, result["workload"]["seed"])
             self.assertEqual(1, len(result["artifacts"]))
+
+    async def test_task_threshold_snapshot_is_evaluated_in_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = Database(root)
+            database.initialize()
+            repository = Repository(database, SecretBox.load(root))
+            runner = BenchmarkTaskRunner(repository, root / "reports")
+            payload = {
+                "task_id": None,
+                "endpoint": {
+                    "base_url": "http://local/v1",
+                    "model": "threshold-model",
+                    "api_key": "secret",
+                },
+                "plan": {
+                    "name": "thresholds",
+                    "plan_type": "smoke",
+                    "concurrency": 1,
+                    "total_requests": 1,
+                },
+                "workload": {"output_size": 16},
+                "thresholds": {
+                    "template_id": "snapshot-id",
+                    "name": "任务快照",
+                    "rules": [
+                        {"metric": "latency.p95", "operator": "<=", "value": 0.2},
+                        {"metric": "error_rate", "operator": "<=", "value": 0.0},
+                    ],
+                },
+                "formats": ["json"],
+            }
+
+            async def sink(event):
+                return None
+
+            with patch("benchmark_server.runner.OpenAIChatClient", FakeOpenAIClient):
+                result = await runner(payload, CancellationToken(), sink)
+
+            self.assertEqual("passed", result["thresholds"]["status"])
+            self.assertEqual(
+                {"passed": 2, "failed": 0, "not_evaluable": 0},
+                result["thresholds"]["counts"],
+            )
+            self.assertEqual(
+                ["passed", "passed"],
+                [item["status"] for item in result["thresholds"]["results"]],
+            )
 
     async def test_configured_assertions_are_applied_and_recorded(self):
         with tempfile.TemporaryDirectory() as directory:
