@@ -146,12 +146,22 @@ class PlanTemplateInput(BaseModel):
     plan: dict[str, Any]
 
 
+class AssertionInput(BaseModel):
+    type: Literal[
+        "non_empty", "token_range", "finish_reason", "contains", "regex",
+        "exact", "json_parse", "json_schema", "response_field",
+    ]
+    value: Any = None
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
 class TaskInput(BaseModel):
     name: str = Field(default="benchmark", min_length=1, max_length=128)
     api_config_id: str | None = None
     endpoint: dict[str, Any] | None = None
     plan: dict[str, Any]
     workload: dict[str, Any] = Field(default_factory=dict)
+    assertions: list[AssertionInput] = Field(default_factory=list, max_length=50)
     stream: bool = True
     formats: list[Literal["json", "jsonl.gz", "events.jsonl.gz", "html", "xlsx", "csv"]] = Field(default_factory=lambda: ["json", "jsonl.gz"])
     priority: int = Field(default=0, ge=-100, le=100)
@@ -205,6 +215,7 @@ class ComparisonInput(BaseModel):
     targets: list[ComparisonTargetInput] | None = Field(default=None, min_length=2, max_length=10)
     plan: dict[str, Any] | None = None
     workload: dict[str, Any] = Field(default_factory=dict)
+    assertions: list[AssertionInput] = Field(default_factory=list, max_length=50)
     stream: bool = True
     formats: list[Literal["json", "jsonl.gz", "events.jsonl.gz", "html", "xlsx", "csv"]] = Field(
         default_factory=lambda: ["json", "jsonl.gz"]
@@ -753,6 +764,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 endpoint=target.endpoint,
                 plan=plan_data,
                 workload=workload,
+                assertions=value.assertions,
                 stream=value.stream,
                 formats=value.formats,
                 priority=value.priority,

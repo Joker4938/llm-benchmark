@@ -151,6 +151,45 @@ class BenchmarkTaskRunnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(7, result["workload"]["seed"])
             self.assertEqual(1, len(result["artifacts"]))
 
+    async def test_configured_assertions_are_applied_and_recorded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = Database(root)
+            database.initialize()
+            repository = Repository(database, SecretBox.load(root))
+            runner = BenchmarkTaskRunner(repository, root / "reports")
+            payload = {
+                "task_id": None,
+                "endpoint": {
+                    "base_url": "http://local/v1",
+                    "model": "assertion-model",
+                    "api_key": "secret",
+                },
+                "plan": {
+                    "name": "assertions",
+                    "plan_type": "smoke",
+                    "concurrency": 1,
+                    "total_requests": 1,
+                },
+                "workload": {"output_size": 16},
+                "assertions": [
+                    {"type": "non_empty", "value": None, "options": {}},
+                    {"type": "contains", "value": "missing", "options": {}},
+                ],
+                "formats": ["json"],
+            }
+
+            async def sink(event):
+                return None
+
+            with patch("benchmark_server.runner.OpenAIChatClient", FakeOpenAIClient):
+                result = await runner(payload, CancellationToken(), sink)
+
+            self.assertEqual(0, result["assertion_passes"])
+            self.assertEqual(1, result["failed_sample_total"])
+            self.assertEqual("assertion", result["failed_samples"][0]["category"])
+            self.assertEqual(payload["assertions"], result["validation"]["assertions"])
+
 
 if __name__ == "__main__":
     unittest.main()

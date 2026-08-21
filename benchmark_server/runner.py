@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from benchmark_core import (
+    AssertionSpec,
+    AssertionType,
     BenchmarkPlan,
     BenchmarkScheduler,
     CancellationToken,
@@ -20,6 +22,7 @@ from benchmark_core import (
     TimeWindowMetrics,
     WorkloadDimensions,
     aggregate_time_windows,
+    apply_validation,
     build_summary,
     builtin_dataset,
     custom_dataset,
@@ -143,10 +146,20 @@ class BenchmarkTaskRunner:
         count = int(plan.total_requests or max(1, len(dataset.records)))
         records, snapshot = sample_records(dataset, count, int(workload.get("seed", 1)), dimensions)
         requests = [record.to_request(dimensions, stream=bool(payload.get("stream", True))) for record in records]
+        assertion_payload = list(payload.get("assertions") or [])
+        assertions = tuple(
+            AssertionSpec(
+                AssertionType(item["type"]),
+                item.get("value"),
+                item.get("options", {}),
+            )
+            for item in assertion_payload
+        )
 
         async with OpenAIChatClient(endpoint, max_connections=max(10, plan.concurrency + 10)) as client:
             async def execute(request: RequestConfig, request_id: str, started: float):
-                return await client.request(request, request_id=request_id, task_started_at=started)
+                sample = await client.request(request, request_id=request_id, task_started_at=started)
+                return apply_validation(sample, assertions)[0]
 
             result = await BenchmarkScheduler(execute).run(
                 plan, requests, cancellation=cancellation, event_sink=event_sink
@@ -179,6 +192,7 @@ class BenchmarkTaskRunner:
                 },
             },
             "request": {"model": endpoint.model, "stream": bool(payload.get("stream", True))},
+            "validation": {"assertions": assertion_payload},
             "artifacts": [
                 {"format": item.format, "path": item.relative_path, "size_bytes": item.size_bytes, "sha256": item.sha256}
                 for item in artifacts

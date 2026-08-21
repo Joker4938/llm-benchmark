@@ -272,6 +272,34 @@ class TaskApiTests(ApiTestCase):
         status_response = self.client.get(f"/api/tasks/{claimed['id']}/status")
         self.assertEqual('stopping', status_response.json()['status'])
 
+    def test_task_persists_validated_response_assertions(self):
+        assertions = [
+            {'type': 'non_empty'},
+            {'type': 'contains', 'value': 'ready'},
+            {'type': 'finish_reason', 'value': ['stop', 'length']},
+        ]
+
+        created = self.client.post(
+            '/api/tasks', json=self.valid_task(assertions=assertions),
+        )
+
+        self.assertEqual(202, created.status_code, created.text)
+        self.assertEqual(
+            [
+                {'type': 'non_empty', 'value': None, 'options': {}},
+                {'type': 'contains', 'value': 'ready', 'options': {}},
+                {'type': 'finish_reason', 'value': ['stop', 'length'], 'options': {}},
+            ],
+            created.json()['payload']['assertions'],
+        )
+
+        invalid = self.client.post(
+            '/api/tasks',
+            json=self.valid_task(assertions=[{'type': 'semantic_similarity'}]),
+        )
+        self.assertEqual(422, invalid.status_code, invalid.text)
+        self.assertEqual('validation_error', invalid.json()['error']['code'])
+
     def test_sse_last_event_id_resume_and_polling_fallback(self):
         task_id = self.repository.create_task('events', {})
         self.repository.append_events(task_id, [
@@ -454,6 +482,7 @@ class ReportAndDiagnosticApiTests(ApiTestCase):
                 'target_qps': 2.5,
             },
             'workload': {'prompt_type': 'structured', 'output_size': 64, 'seed': 19},
+            'assertions': [{'type': 'non_empty'}],
             'formats': ['json'],
         }
 
@@ -470,6 +499,10 @@ class ReportAndDiagnosticApiTests(ApiTestCase):
         self.assertEqual(
             [tasks[0]['payload']['workload'], tasks[1]['payload']['workload']],
             [payload['workload'], payload['workload']],
+        )
+        self.assertEqual(
+            [[{'type': 'non_empty', 'value': None, 'options': {}}]] * 2,
+            [task['payload']['assertions'] for task in tasks],
         )
         self.assertNotIn('secret-a', created.text)
         self.assertNotIn('secret-b', created.text)
