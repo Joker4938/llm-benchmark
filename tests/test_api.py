@@ -431,27 +431,40 @@ class ReportAndDiagnosticApiTests(ApiTestCase):
         self.assertNotIn('secret-a', created.text)
         self.assertNotIn('secret-b', created.text)
 
-        first = self.repository.claim_next_task_batch('worker')[0]
-        self.repository.finish_task(
-            first['id'],
-            first['claim_token'],
+        first_batch = self.repository.claim_next_task_batch('worker')
+        self.assertEqual([comparison['task_ids'][0]], [task['id'] for task in first_batch])
+        self.assertEqual([], self.repository.claim_next_task_batch('other-worker'))
+        first_result = self.comparable_result(model='model-a', latency_p95=0.8)
+        self.assertTrue(self.repository.finish_task(
+            first_batch[0]['id'],
+            first_batch[0]['claim_token'],
             status='completed',
-            result=self.comparable_result(model='model-a'),
-        )
-        second = self.repository.claim_next_task_batch('worker')[0]
-        self.repository.finish_task(
-            second['id'],
-            second['claim_token'],
+            result=first_result,
+        ))
+
+        second_batch = self.repository.claim_next_task_batch('worker')
+        self.assertEqual([comparison['task_ids'][1]], [task['id'] for task in second_batch])
+        second_result = self.comparable_result(model='model-b', latency_p95=1.2)
+        self.assertTrue(self.repository.finish_task(
+            second_batch[0]['id'],
+            second_batch[0]['claim_token'],
             status='completed',
-            result=self.comparable_result(model='model-b'),
-        )
-        finished = self.client.get(f"/api/comparisons/{comparison['id']}").json()
+            result=second_result,
+        ))
+
+        response = self.client.get(f"/api/comparisons/{comparison['id']}")
+        self.assertEqual(200, response.status_code, response.text)
+        finished = response.json()
         self.assertEqual('completed', finished['status'])
-        self.assertEqual(
-            ['model-a', 'model-b'],
-            [run['model'] for run in finished['result']['runs']],
-        )
-        self.assertTrue(all(run['status'] == 'completed' for run in finished['result']['runs']))
+        runs = finished['result']['runs']
+        self.assertEqual(comparison['task_ids'], [run['task_id'] for run in runs])
+        self.assertEqual(['模型 A', '模型 B'], [run['target_name'] for run in runs])
+        self.assertEqual(['model-a', 'model-b'], [run['model'] for run in runs])
+        self.assertEqual([0.8, 1.2], [run['metrics']['latency']['p95'] for run in runs])
+        self.assertTrue(all(run['status'] == 'completed' for run in runs))
+        self.assertEqual(1, finished['result']['aggregate_load']['active_models'])
+        self.assertTrue(finished['result']['same_workload_order'])
+        self.assertNotIn('score', finished['result'])
 
     def test_comparison_preflight_checks_synchronous_aggregate_load(self):
         payload = {
@@ -517,6 +530,39 @@ class ReportAndDiagnosticApiTests(ApiTestCase):
         self.assertEqual(2, result['aggregate_load']['active_models'])
         self.assertIn('共享资源竞争效应', result['warning'])
         self.assertNotIn('score', result)
+
+        comparison = created.json()
+        claimed = self.repository.claim_next_task_batch('sync-worker')
+        self.assertEqual(comparison['task_ids'], [task['id'] for task in claimed])
+        workloads = [task['payload']['workload'] for task in claimed]
+        self.assertEqual(workloads[0], workloads[1])
+        self.assertEqual(1, workloads[0]['seed'])
+        for task, model, latency_p95 in zip(
+            claimed, ('model-a', 'model-b'), (0.7, 1.1), strict=True,
+        ):
+            self.assertTrue(self.repository.finish_task(
+                task['id'],
+                task['claim_token'],
+                status='completed',
+                result=self.comparable_result(
+                    model=model,
+                    latency_p95=latency_p95,
+                    concurrency=4,
+                ),
+            ))
+
+        response = self.client.get(f"/api/comparisons/{comparison['id']}")
+        self.assertEqual(200, response.status_code, response.text)
+        finished = response.json()
+        self.assertEqual('completed', finished['status'])
+        runs = finished['result']['runs']
+        self.assertEqual(comparison['task_ids'], [run['task_id'] for run in runs])
+        self.assertEqual(['model-a', 'model-b'], [run['model'] for run in runs])
+        self.assertEqual([0.7, 1.1], [run['metrics']['latency']['p95'] for run in runs])
+        self.assertTrue(all(run['status'] == 'completed' for run in runs))
+        self.assertEqual(2, finished['result']['aggregate_load']['active_models'])
+        self.assertIn('共享资源竞争效应', finished['result']['warning'])
+        self.assertNotIn('score', finished['result'])
 
     def test_synchronous_comparison_requires_confirmation(self):
         first = self.completed_task()
