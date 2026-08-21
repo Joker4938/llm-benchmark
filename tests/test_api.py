@@ -17,12 +17,17 @@ class ApiTestCase(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
+        self.frontend = self.root / 'frontend'
+        (self.frontend / 'assets').mkdir(parents=True)
+        (self.frontend / 'index.html').write_text('<!doctype html><title>LLM Benchmark</title>', encoding='utf-8')
+        (self.frontend / 'assets' / 'app.js').write_text('window.__BENCHMARK__ = true', encoding='utf-8')
         self.settings = AppSettings(
             data_dir=self.root,
             username='bench',
             password='correct-password',
             session_secret='0123456789abcdef-session-secret',
             session_hours=12,
+            frontend_dir=self.frontend,
         )
         self.env = patch.dict(os.environ, {
             'LLM_BENCHMARK_LEGACY_CONFIG': str(self.root / 'missing-config.json'),
@@ -113,6 +118,16 @@ class AuthenticationApiTests(ApiTestCase):
         self.assertEqual('validation_error', body['error']['code'])
         self.assertIsInstance(body['error']['details'], list)
         self.assertTrue(body['request_id'])
+
+    def test_frontend_dist_is_served_without_shadowing_api_routes(self):
+        index = self.client.get('/')
+        self.assertEqual(200, index.status_code)
+        self.assertIn('LLM Benchmark', index.text)
+        self.assertEqual('window.__BENCHMARK__ = true', self.client.get('/assets/app.js').text)
+        self.assertIn('LLM Benchmark', self.client.get('/history').text)
+        missing_api = self.client.get('/api/not-found')
+        self.assertEqual(404, missing_api.status_code)
+        self.assertEqual('接口不存在', missing_api.json()['error']['message'])
 
     def test_unexpected_exception_is_redacted(self):
         @self.app.get('/api/test-error')

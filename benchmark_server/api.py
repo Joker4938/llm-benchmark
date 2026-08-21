@@ -22,6 +22,7 @@ from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Requ
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from openpyxl import Workbook
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -59,6 +60,7 @@ class AppSettings:
     session_hours: int = 12
     cors_origins: tuple[str, ...] = ()
     secure_cookie: bool = False
+    frontend_dir: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.username or not self.password:
@@ -89,6 +91,7 @@ class AppSettings:
             int(os.environ.get("LLM_BENCHMARK_SESSION_HOURS", "12")),
             origins,
             os.environ.get("LLM_BENCHMARK_SECURE_COOKIE", "false").lower() == "true",
+            Path(os.environ["LLM_BENCHMARK_FRONTEND_DIR"]) if os.environ.get("LLM_BENCHMARK_FRONTEND_DIR") else None,
         )
 
 
@@ -191,6 +194,11 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     )
     reports_dir = settings.data_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
+    frontend_dir = (
+        settings.frontend_dir
+        or (Path(os.environ["LLM_BENCHMARK_FRONTEND_DIR"]) if os.environ.get("LLM_BENCHMARK_FRONTEND_DIR") else None)
+        or Path(__file__).resolve().parents[1] / "frontend" / "dist"
+    ).resolve()
     signer = SessionSigner(settings.session_secret, settings.session_hours * 3600)
     app = FastAPI(title="LLM Benchmark", version="0.2.0", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.repository = repository
@@ -236,6 +244,17 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException):
         return _error(request, exc.status_code, "http_error", str(exc.detail))
+
+    @app.exception_handler(StarletteHTTPException)
+    async def route_error(request: Request, exc: StarletteHTTPException):
+        path = request.url.path
+        reserved = path == "/api" or path.startswith("/api/") or path == "/health" or path.startswith("/health/")
+        asset_like = path.startswith("/assets/") or "." in Path(path).name
+        index_path = frontend_dir / "index.html"
+        if exc.status_code == 404 and request.method == "GET" and not reserved and not asset_like and index_path.is_file():
+            return FileResponse(index_path, media_type="text/html")
+        message = "接口不存在" if exc.status_code == 404 and reserved else str(exc.detail)
+        return _error(request, exc.status_code, "http_error", message)
 
     @app.exception_handler(Exception)
     async def unhandled_error(request: Request, exc: Exception):
@@ -639,6 +658,27 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             "generator": {"cpu_count": os.cpu_count(), "load_average": load_average},
             "network_check": "skipped",
         }
+
+    app.state.frontend_dir = frontend_dir
+
+    def frontend_file(relative_path: str) -> FileResponse:
+        candidate = (frontend_dir / relative_path).resolve()
+        if candidate != frontend_dir and frontend_dir not in candidate.parents:
+            raise HTTPException(404, "页面不存在")
+        if not candidate.is_file():
+            raise HTTPException(404, "前端资源不存在")
+        return FileResponse(candidate)
+
+    @app.get("/", include_in_schema=False)
+    def frontend_index():
+        index_path = frontend_dir / "index.html"
+        if not index_path.is_file():
+            raise HTTPException(404, "前端资源尚未构建")
+        return FileResponse(index_path, media_type="text/html")
+
+    @app.get("/assets/{asset_path:path}", include_in_schema=False)
+    def frontend_asset(asset_path: str):
+        return frontend_file(f"assets/{asset_path}")
 
     return app
 
