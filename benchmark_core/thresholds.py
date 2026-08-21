@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import math
 from typing import Any, Mapping, Sequence
 
 from .models import BenchmarkSummary
@@ -112,6 +113,8 @@ def parse_threshold(value: str) -> ThresholdRule:
         expected = float(parts[2])
     except ValueError as exc:
         raise ValueError(f"threshold 数值无效: {parts[2]}") from exc
+    if not math.isfinite(expected):
+        raise ValueError(f"threshold 数值必须为有限数: {parts[2]}")
     return ThresholdRule(metric, parts[1], expected)
 
 

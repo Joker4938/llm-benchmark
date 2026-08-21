@@ -35,6 +35,38 @@ class ThresholdTests(unittest.TestCase):
         self.assertEqual(ThresholdStatus.FAILED, results[1].status)
         self.assertEqual(ThresholdStatus.NOT_EVALUABLE, results[2].status)
 
+    def test_rate_thresholds_use_completed_requests_and_report_observed_values(self):
+        rules = (
+            parse_threshold("error_rate:<=:0.5"),
+            parse_threshold("valid_response_rate:>=:0.5"),
+            parse_threshold("assertion_pass_rate:>:0.5"),
+        )
+
+        results = evaluate_thresholds(self.summary, rules)
+
+        self.assertEqual([0.5, 0.5, 0.5], [result.observed for result in results])
+        self.assertEqual(
+            [ThresholdStatus.PASSED, ThresholdStatus.PASSED, ThresholdStatus.FAILED],
+            [result.status for result in results],
+        )
+
+    def test_empty_run_rates_are_not_evaluable(self):
+        summary = self.summary.to_dict()
+        summary.update({
+            "completed_requests": 0,
+            "transport_successes": 0,
+            "valid_responses": 0,
+            "assertion_passes": 0,
+        })
+        results = evaluate_thresholds(summary, (
+            parse_threshold("error_rate:<=:0.1"),
+            parse_threshold("valid_response_rate:>=:0.9"),
+            parse_threshold("assertion_pass_rate:>=:0.9"),
+        ))
+
+        self.assertTrue(all(result.observed is None for result in results))
+        self.assertTrue(all(result.status is ThresholdStatus.NOT_EVALUABLE for result in results))
+
     def test_baseline_compatibility_and_deltas(self):
         current = self.summary.to_dict()
         baseline = self.summary.to_dict()
@@ -75,6 +107,8 @@ class ThresholdTests(unittest.TestCase):
         by_metric = {item["metric"]: item for item in result["metrics"]}
         self.assertEqual("regressed", result["conclusion"])
         self.assertEqual("regressed", by_metric["latency.p95"]["status"])
+        self.assertAlmostEqual(0.2, by_metric["latency.p95"]["absolute_delta"])
+        self.assertAlmostEqual(10.0, by_metric["latency.p95"]["percent_delta"])
         self.assertEqual("stable", by_metric["achieved_qps"]["status"])
         self.assertEqual("improved", by_metric["aggregate_output_tps"]["status"])
         self.assertEqual("regressed", by_metric["error_rate"]["status"])
@@ -114,8 +148,9 @@ class ThresholdTests(unittest.TestCase):
         self.assertIn("request.stream 不一致", result["incompatibilities"])
 
     def test_invalid_threshold_is_rejected(self):
-        with self.assertRaises(ValueError):
-            parse_threshold("latency.p95=2")
+        for value in ("latency.p95=2", "latency.p95:<=:nan", "latency.p95:<=:inf"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                parse_threshold(value)
 
 
 if __name__ == "__main__":
