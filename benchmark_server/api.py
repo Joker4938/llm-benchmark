@@ -169,6 +169,22 @@ class ThresholdInput(BaseModel):
     rules: list[dict[str, Any]] = Field(min_length=1)
 
 
+class BaselineInput(BaseModel):
+    baseline_id: str = Field(min_length=1, max_length=64)
+    tolerances: dict[str, dict[str, float | None] | float] = Field(default_factory=dict)
+
+    @field_validator("tolerances")
+    @classmethod
+    def validate_tolerances(cls, value):
+        for metric, configured in value.items():
+            if not metric.strip():
+                raise ValueError("容差指标名不能为空")
+            numbers = configured.values() if isinstance(configured, dict) else (configured,)
+            if any(number is not None and number < 0 for number in numbers):
+                raise ValueError("基线容差不能为负数")
+        return value
+
+
 class ComparisonInput(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     mode: Literal["sequential", "synchronous"] = "sequential"
@@ -555,6 +571,69 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         if not current or not previous:
             raise HTTPException(409, "当前任务或基线尚无结果")
         return compare_baseline(current, previous)
+
+    @app.get("/api/tasks/{task_id}/baseline-candidates")
+    def baseline_candidates(task_id: str, user: str = Depends(current_user)):
+        current_task = get_task(task_id, user)
+        current = current_task.get("result")
+        if not current:
+            raise HTTPException(409, "当前任务尚无可比较结果")
+        candidates = []
+        for task in repository.list_tasks(1000):
+            if (
+                task["id"] == task_id
+                or not task.get("result")
+                or task.get("status") not in TERMINAL_STATES
+                or task.get("created_at", "") > current_task.get("created_at", "")
+            ):
+                continue
+            comparison = compare_baseline(current, task["result"])
+            request_snapshot = task["result"].get("request", {})
+            plan_snapshot = task["result"].get("plan", {})
+            candidates.append({
+                "id": task["id"],
+                "name": task["name"],
+                "status": task["status"],
+                "created_at": task["created_at"],
+                "finished_at": task["finished_at"],
+                "model": request_snapshot.get("model"),
+                "plan_type": plan_snapshot.get("plan_type"),
+                "compatible": comparison["compatible"],
+                "incompatibilities": comparison["incompatibilities"],
+                "conclusion": comparison["conclusion"],
+            })
+        return candidates
+
+    @app.get("/api/tasks/{task_id}/baseline")
+    def get_saved_baseline(task_id: str, user: str = Depends(current_user)):
+        get_task(task_id, user)
+        try:
+            return repository.get_task_baseline(task_id)
+        except KeyError:
+            raise HTTPException(404, "当前任务尚未选择历史基线")
+
+    @app.put("/api/tasks/{task_id}/baseline")
+    def save_baseline(task_id: str, value: BaselineInput, user: str = Depends(current_user)):
+        if task_id == value.baseline_id:
+            raise HTTPException(422, "不能将任务自身设为历史基线")
+        current = get_task(task_id, user).get("result")
+        previous = get_task(value.baseline_id, user).get("result")
+        if not current or not previous:
+            raise HTTPException(409, "当前任务或基线尚无结果")
+        comparison = compare_baseline(current, previous, tolerances=value.tolerances)
+        if not comparison["compatible"]:
+            reasons = "；".join(comparison["incompatibilities"])
+            raise HTTPException(409, f"所选历史基线不兼容：{reasons}")
+        return repository.save_task_baseline(
+            task_id, value.baseline_id, value.tolerances, comparison,
+        )
+
+    @app.delete("/api/tasks/{task_id}/baseline", status_code=204)
+    def delete_saved_baseline(task_id: str, user: str = Depends(current_user)):
+        get_task(task_id, user)
+        if not repository.delete_task_baseline(task_id):
+            raise HTTPException(404, "当前任务尚未选择历史基线")
+        return Response(status_code=204)
 
     @app.get("/api/comparisons")
     def list_comparisons(user: str = Depends(current_user)):

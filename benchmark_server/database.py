@@ -141,6 +141,21 @@ _MIGRATIONS = (
         );
         """,
     ),
+    (
+        2,
+        """
+        CREATE TABLE IF NOT EXISTS task_baselines (
+            task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+            baseline_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            tolerances_json TEXT NOT NULL DEFAULT '{}',
+            comparison_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK(task_id <> baseline_task_id)
+        );
+        CREATE INDEX IF NOT EXISTS ix_task_baselines_baseline ON task_baselines(baseline_task_id);
+        """,
+    ),
 )
 
 

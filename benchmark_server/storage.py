@@ -159,6 +159,61 @@ class Repository:
             task["queue_position"] = position
         return task
 
+    def save_task_baseline(
+        self,
+        task_id: str,
+        baseline_task_id: str,
+        tolerances: Mapping[str, Any],
+        comparison: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """保存任务选择的历史基线及当时的比较快照。"""
+
+        now = utc_now()
+        with self.database.transaction(immediate=True) as connection:
+            connection.execute(
+                """INSERT INTO task_baselines(
+                    task_id,baseline_task_id,tolerances_json,comparison_json,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET
+                baseline_task_id=excluded.baseline_task_id,
+                tolerances_json=excluded.tolerances_json,
+                comparison_json=excluded.comparison_json,
+                updated_at=excluded.updated_at""",
+                (
+                    task_id,
+                    baseline_task_id,
+                    _json(redact(tolerances)),
+                    _json(redact(comparison)),
+                    now,
+                    now,
+                ),
+            )
+        return self.get_task_baseline(task_id)
+
+    def get_task_baseline(self, task_id: str) -> dict[str, Any]:
+        """读取任务持久化的基线关系和比较快照。"""
+
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM task_baselines WHERE task_id=?", (task_id,),
+            ).fetchone()
+        if not row:
+            raise KeyError(task_id)
+        return {
+            "task_id": row["task_id"],
+            "baseline_task_id": row["baseline_task_id"],
+            "tolerances": json.loads(row["tolerances_json"]),
+            "comparison": json.loads(row["comparison_json"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def delete_task_baseline(self, task_id: str) -> bool:
+        """删除任务选择的历史基线。"""
+
+        with self.database.transaction(immediate=True) as connection:
+            cursor = connection.execute("DELETE FROM task_baselines WHERE task_id=?", (task_id,))
+            return cursor.rowcount > 0
+
     def claim_next_task(self, worker: str) -> dict[str, Any] | None:
         token = f"{worker}:{uuid.uuid4().hex}"
         now = utc_now()

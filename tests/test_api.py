@@ -297,14 +297,14 @@ class ReportAndDiagnosticApiTests(ApiTestCase):
         super().setUp()
         self.login()
 
-    def completed_task(self):
-        task_id = self.repository.create_task('done', {})
+    def completed_task(self, name='done', result=None):
+        task_id = self.repository.create_task(name, {})
         claimed = self.repository.claim_next_task('worker')
         self.repository.finish_task(
             task_id,
             claimed['claim_token'],
             status='completed',
-            result={
+            result=result or {
                 'task_id': task_id,
                 'plan': {'name': '完成任务', 'plan_type': 'smoke', 'concurrency': 1},
                 'completed_requests': 2,
@@ -314,6 +314,41 @@ class ReportAndDiagnosticApiTests(ApiTestCase):
             },
         )
         return task_id
+
+    @staticmethod
+    def comparable_result(*, model='model-a', latency_p95=1.0, concurrency=2):
+        return {
+            'schema_version': '2.0',
+            'plan': {
+                'plan_type': 'fixed_concurrency',
+                'concurrency': concurrency,
+                'total_requests': 100,
+                'duration_seconds': None,
+                'target_qps': None,
+                'warmup_seconds': 0,
+                'cooldown_seconds': 0,
+                'stages': [],
+            },
+            'request': {'model': model, 'stream': True},
+            'workload': {
+                'sha256': 'dataset-hash',
+                'seed': 7,
+                'selected_record_ids': ['record-1'],
+                'dimensions': {
+                    'prompt_type': 'structured',
+                    'input_size': 'short',
+                    'output_tokens': 64,
+                },
+            },
+            'completed_requests': 100,
+            'transport_successes': 100,
+            'valid_responses': 100,
+            'assertion_passes': 100,
+            'latency': {'p95': latency_p95},
+            'achieved_qps': 20.0,
+            'aggregate_output_tps': 1000.0,
+            'api_key': 'must-not-leak',
+        }
 
     def test_report_generate_download_delete_and_path_traversal(self):
         task_id = self.completed_task()
@@ -358,6 +393,60 @@ class ReportAndDiagnosticApiTests(ApiTestCase):
         created = self.client.post('/api/comparisons', json=payload)
         self.assertEqual(201, created.status_code, created.text)
         self.assertEqual('shared', created.json()['resource_semantics'])
+
+    def test_baseline_candidates_persistence_tolerance_and_delete(self):
+        baseline_id = self.completed_task(
+            '历史基线', self.comparable_result(latency_p95=1.0),
+        )
+        current_id = self.completed_task(
+            '当前任务', self.comparable_result(latency_p95=1.2),
+        )
+
+        candidates = self.client.get(f'/api/tasks/{current_id}/baseline-candidates')
+        self.assertEqual(200, candidates.status_code, candidates.text)
+        candidate = next(item for item in candidates.json() if item['id'] == baseline_id)
+        self.assertTrue(candidate['compatible'])
+        self.assertEqual('regressed', candidate['conclusion'])
+
+        saved = self.client.put(f'/api/tasks/{current_id}/baseline', json={
+            'baseline_id': baseline_id,
+            'tolerances': {'latency.p95': {'percent': 25, 'absolute': 0}},
+        })
+        self.assertEqual(200, saved.status_code, saved.text)
+        self.assertEqual('stable', saved.json()['comparison']['conclusion'])
+        self.assertNotIn('must-not-leak', saved.text)
+        fetched = self.client.get(f'/api/tasks/{current_id}/baseline')
+        self.assertEqual(baseline_id, fetched.json()['baseline_task_id'])
+
+        self.assertEqual(204, self.client.delete(f'/api/tasks/{current_id}/baseline').status_code)
+        self.assertEqual(404, self.client.get(f'/api/tasks/{current_id}/baseline').status_code)
+
+    def test_baseline_rejects_self_missing_result_and_incompatible_task(self):
+        baseline_id = self.completed_task('历史基线', self.comparable_result())
+        current_id = self.completed_task(
+            '当前任务', self.comparable_result(model='model-b'),
+        )
+        incompatible = self.client.put(f'/api/tasks/{current_id}/baseline', json={
+            'baseline_id': baseline_id,
+        })
+        self.assertEqual(409, incompatible.status_code)
+        self.assertIn('request.model 不一致', incompatible.text)
+
+        self.assertEqual(422, self.client.put(f'/api/tasks/{current_id}/baseline', json={
+            'baseline_id': current_id,
+        }).status_code)
+
+        pending_id = self.repository.create_task('尚未运行', {})
+        no_result = self.client.put(f'/api/tasks/{current_id}/baseline', json={
+            'baseline_id': pending_id,
+        })
+        self.assertEqual(409, no_result.status_code)
+
+        invalid_tolerance = self.client.put(f'/api/tasks/{current_id}/baseline', json={
+            'baseline_id': baseline_id,
+            'tolerances': {'latency.p95': {'percent': -1}},
+        })
+        self.assertEqual(422, invalid_tolerance.status_code)
 
 
 class AppSettingsTests(unittest.TestCase):

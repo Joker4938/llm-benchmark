@@ -31,6 +31,7 @@ class DatabaseTests(StorageTestCase):
             self.assertEqual('wal', connection.execute('PRAGMA journal_mode').fetchone()[0].lower())
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertIn('tasks', tables)
+        self.assertIn('task_baselines', tables)
         with self.assertRaises(RuntimeError):
             with self.database.transaction() as connection:
                 connection.execute("INSERT INTO settings VALUES('x','1','now')")
@@ -72,7 +73,7 @@ class DatabaseTests(StorageTestCase):
         self.assertTrue(result.recovered)
         self.assertTrue(Path(result.backup_path).exists())
         with recovery_db.connect() as connection:
-            self.assertEqual(1, connection.execute('SELECT COUNT(*) FROM schema_migrations').fetchone()[0])
+            self.assertEqual(2, connection.execute('SELECT COUNT(*) FROM schema_migrations').fetchone()[0])
 
     def test_concurrent_claim_never_claims_same_task_twice(self):
         task_id = self.repository.create_task('only', {})
@@ -95,6 +96,22 @@ class DatabaseTests(StorageTestCase):
         self.assertEqual(plan_id, self.repository.get_plan(plan_id)['id'])
         self.assertTrue(self.repository.delete_resource('thresholds', threshold_id))
         self.assertTrue(self.repository.delete_resource('comparisons', comparison_id))
+
+    def test_task_baseline_repository_round_trip_and_redaction(self):
+        baseline_id = self.repository.create_task('baseline', {})
+        task_id = self.repository.create_task('current', {})
+        saved = self.repository.save_task_baseline(
+            task_id,
+            baseline_id,
+            {'latency.p95': {'percent': 5, 'absolute': 0}},
+            {'compatible': True, 'api_key': 'must-hide'},
+        )
+        self.assertEqual(baseline_id, saved['baseline_task_id'])
+        self.assertEqual('***', saved['comparison']['api_key'])
+        self.assertEqual(saved, self.repository.get_task_baseline(task_id))
+        self.assertTrue(self.repository.delete_task_baseline(task_id))
+        with self.assertRaises(KeyError):
+            self.repository.get_task_baseline(task_id)
 
     def test_events_are_idempotent_and_resume_after_sequence(self):
         task = self.repository.create_task('events', {})
