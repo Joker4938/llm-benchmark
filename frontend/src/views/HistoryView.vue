@@ -49,6 +49,37 @@
           <MetricReadout label="完成请求" :value="result.completed_requests" /><MetricReadout label="有效响应" :value="result.valid_responses" /><MetricReadout label="TTFT P95" :value="nested('ttft', 'p95')" unit="s" /><MetricReadout label="输出 TPS" :value="result.aggregate_output_tps" unit="tok/s" />
         </div>
         <StateNotice v-if="selected.error_message" tone="danger" title="执行失败" :message="selected.error_message" />
+        <section v-if="canGenerateReports" class="record-detail-section">
+          <div class="panel-heading detail-heading">
+            <div><span>TIME WINDOWS</span><h3>时间序列</h3></div><small>{{ timeSeriesCaption }}</small>
+          </div>
+          <div v-if="displayWindows.length" class="time-window-list" aria-label="任务时间序列">
+            <article v-for="window in displayWindows" :key="`${window.start_offset}-${window.end_offset}`" class="time-window-row">
+              <code>{{ rangeLabel(window) }}</code>
+              <div class="window-track" role="img" :aria-label="windowAriaLabel(window)">
+                <span :style="{ width: `${windowWidth(window)}%` }"></span>
+              </div>
+              <strong>{{ fixed(window.achieved_qps, 2) }} QPS</strong>
+              <small>P95 {{ fixed(window.latency_p95, 3) }}s · 错误 {{ window.errors || 0 }}</small>
+            </article>
+          </div>
+          <div v-else class="inline-empty">
+            该历史记录未包含时间窗口；新任务完成后会自动保存。
+          </div>
+        </section>
+        <section v-if="canGenerateReports" class="record-detail-section">
+          <div class="panel-heading detail-heading">
+            <div><span>FAILURE SAMPLES</span><h3>失败样本</h3></div><small>{{ failedSamples.length }} / {{ failedSampleTotal }}</small>
+          </div>
+          <StateNotice v-if="!failedSampleTotal" tone="success" title="未记录失败样本" message="传输、协议和响应断言均未产生可展示的失败记录。" />
+          <div v-else class="failure-sample-list">
+            <article v-for="sample in failedSamples" :key="sample.request_id" class="failure-sample">
+              <header><code>{{ sample.request_id }}</code><span class="failure-category">{{ errorCategoryLabel(sample.category) }}</span><span v-if="sample.retryable" class="retry-chip">可重试</span></header>
+              <p>{{ sample.message }}</p>
+              <dl><div><dt>发生时间</dt><dd>{{ seconds(sample.started_at_offset, 2) }}</dd></div><div><dt>状态码</dt><dd>{{ sample.status_code || '—' }}</dd></div><div><dt>延迟</dt><dd>{{ seconds(sample.latency, 3) }}</dd></div><div><dt>TTFT</dt><dd>{{ seconds(sample.ttft, 3) }}</dd></div></dl>
+            </article>
+          </div>
+        </section>
         <section class="artifact-section">
           <div class="panel-heading">
             <span>ARTIFACTS</span><h3>离线制品</h3>
@@ -91,6 +122,12 @@ const filtered = computed(() => tasks.value.filter(item => {
 }))
 const result = computed(() => selected.value && selected.value.result ? selected.value.result : {})
 const canGenerateReports = computed(() => Boolean(selected.value && selected.value.result))
+const timeSeries = computed(() => Array.isArray(result.value.time_series) ? result.value.time_series : [])
+const displayWindows = computed(() => compactWindows(timeSeries.value))
+const maxWindowQps = computed(() => Math.max(1, ...displayWindows.value.map(item => Number(item.achieved_qps) || 0)))
+const timeSeriesCaption = computed(() => timeSeries.value.length > displayWindows.value.length ? `${displayWindows.value.length} 组 / ${timeSeries.value.length} 窗口` : `${timeSeries.value.length} 个窗口`)
+const failedSamples = computed(() => Array.isArray(result.value.failed_samples) ? result.value.failed_samples : [])
+const failedSampleTotal = computed(() => Number(result.value.failed_sample_total) || failedSamples.value.length)
 const recordSegments = computed(() => {
   const plan = selected.value && selected.value.payload && selected.value.payload.plan
   if (plan && plan.stages && plan.stages.length) return plan.stages.map(item => ({ name: item.name, detail: `${item.concurrency} 并发`, weight: item.requests || 1, kind: 'load' }))
@@ -124,6 +161,32 @@ function modelName(item) { return item.payload && item.payload.endpoint && item.
 function metric(item, parent, key) { const value = parent ? item.result && item.result[parent] && item.result[parent][key] : item.result && item.result[key]; return typeof value === 'number' ? value.toFixed(parent ? 3 : 2) : '—' }
 function successRate(item) { const resultValue = item.result; return resultValue && resultValue.completed_requests ? `${Math.round((resultValue.transport_successes || 0) / resultValue.completed_requests * 100)}%` : '—' }
 function nested(parent, key) { const value = result.value[parent] && result.value[parent][key]; return typeof value === 'number' ? value.toFixed(3) : value }
+function compactWindows(rows, limit = 36) {
+  if (rows.length <= limit) return rows
+  const size = Math.ceil(rows.length / limit)
+  const compacted = []
+  for (let index = 0; index < rows.length; index += size) {
+    const bucket = rows.slice(index, index + size)
+    compacted.push({
+      start_offset: bucket[0].start_offset,
+      end_offset: bucket[bucket.length - 1].end_offset,
+      achieved_qps: Math.max(...bucket.map(item => Number(item.achieved_qps) || 0)),
+      latency_p95: maxDefined(bucket.map(item => item.latency_p95)),
+      errors: bucket.reduce((total, item) => total + (Number(item.errors) || 0), 0)
+    })
+  }
+  return compacted
+}
+function maxDefined(values) {
+  const numbers = values.filter(value => typeof value === 'number')
+  return numbers.length ? Math.max(...numbers) : null
+}
+function windowWidth(window) { return Math.max(2, Math.min(100, (Number(window.achieved_qps) || 0) / maxWindowQps.value * 100)) }
+function rangeLabel(window) { return `${fixed(window.start_offset, 1)}–${fixed(window.end_offset, 1)}s` }
+function windowAriaLabel(window) { return `${rangeLabel(window)}，QPS ${fixed(window.achieved_qps, 2)}，P95 延迟 ${fixed(window.latency_p95, 3)} 秒，错误 ${window.errors || 0}` }
+function fixed(value, digits) { return typeof value === 'number' ? value.toFixed(digits) : '—' }
+function seconds(value, digits) { return typeof value === 'number' ? `${value.toFixed(digits)}s` : '—' }
+function errorCategoryLabel(value) { return ({ timeout: '超时', authentication: '认证', rate_limit: '限流', server: '服务端', client: '客户端', transport: '传输', protocol: '协议', cancelled: '取消', assertion: '断言', unknown: '未知' })[value] || value || '未知' }
 function formatTime(value) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—' }
 function formatBytes(value) { if (value < 1024) return `${value} B`; if (value < 1048576) return `${(value / 1024).toFixed(1)} KB`; return `${(value / 1048576).toFixed(1)} MB` }
 </script>
