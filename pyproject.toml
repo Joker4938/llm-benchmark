@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-benchmark"
+version = "0.2.0"
+description = "Offline OpenAI-compatible API benchmark toolkit"
+requires-python = ">=3.10"
+dependencies = [
+  "httpx>=0.27,<1",
+  "openai>=1.35,<2",
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+]
+
+[project.scripts]
+llm-benchmark = "benchmark_cli.main:main"
+llm-benchmark-executor = "benchmark_server.executor_main:main"
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.2,<9",
+  "pytest-asyncio>=0.23,<1",
+]
+
+[tool.setuptools.packages.find]
+include = ["benchmark_core*", "benchmark_cli*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra"

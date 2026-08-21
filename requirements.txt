@@ -4,3 +4,4 @@ rich>=13.7.1
 plotly>=5.18.0
 pandas>=2.2.0
 openpyxl>=3.1.0
+jsonschema>=4.22,<5
