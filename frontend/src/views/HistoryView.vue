@@ -53,13 +53,15 @@
           <div class="panel-heading">
             <span>ARTIFACTS</span><h3>离线制品</h3>
           </div>
+          <StateNotice v-if="artifactNotice" :tone="artifactNotice.tone" :title="artifactNotice.title" :message="artifactNotice.message" />
+          <StateNotice v-else-if="!canGenerateReports" tone="warning" title="任务尚无可导出结果" :message="`${statusLabel(selected.status)}任务需要等待结果写入后才能生成报告。`" />
           <div v-if="!reports.length" class="inline-empty">
             还没有制品，可按需生成摘要格式。
           </div>
           <a v-for="report in reports" :key="report.id" class="artifact-row" :href="downloadUrl(report.id)"><strong>{{ report.format.toUpperCase() }}</strong><span>{{ formatBytes(report.size_bytes) }}</span><code>{{ report.sha256.slice(0, 12) }}</code></a>
           <div class="export-actions">
-            <button v-for="format in ['json', 'html', 'csv', 'xlsx']" :key="format" type="button" class="secondary-button" @click="generate(format)">
-              生成 {{ format.toUpperCase() }}
+            <button v-for="format in ['json', 'html', 'csv', 'xlsx']" :key="format" type="button" class="secondary-button" :disabled="!canGenerateReports || Boolean(generatingFormat)" @click="generate(format)">
+              {{ generatingFormat === format ? '正在生成…' : `生成 ${format.toUpperCase()}` }}
             </button>
           </div>
         </section>
@@ -79,6 +81,8 @@ import StateNotice from '../components/StateNotice.vue'
 
 const route = useRoute()
 const tasks = ref([]); const reports = ref([]); const selected = ref(null); const query = ref(''); const status = ref(''); const loading = ref(false); const error = ref('')
+const artifactNotice = ref(null)
+const generatingFormat = ref('')
 const statusOptions = ['queued', 'running', 'stopping', 'completed', 'failed', 'cancelled', 'interrupted']
 const filtered = computed(() => tasks.value.filter(item => {
   if (status.value && item.status !== status.value) return false
@@ -86,6 +90,7 @@ const filtered = computed(() => tasks.value.filter(item => {
   return !query.value || text.includes(query.value.toLowerCase())
 }))
 const result = computed(() => selected.value && selected.value.result ? selected.value.result : {})
+const canGenerateReports = computed(() => Boolean(selected.value && selected.value.result))
 const recordSegments = computed(() => {
   const plan = selected.value && selected.value.payload && selected.value.payload.plan
   if (plan && plan.stages && plan.stages.length) return plan.stages.map(item => ({ name: item.name, detail: `${item.concurrency} 并发`, weight: item.requests || 1, kind: 'load' }))
@@ -94,8 +99,24 @@ const recordSegments = computed(() => {
 
 onMounted(async () => { await load(); if (route.query.task) { const item = tasks.value.find(task => task.id === route.query.task); if (item) openRecord(item) } })
 async function load() { loading.value = true; error.value = ''; try { tasks.value = await api.tasks() } catch (reason) { error.value = reason.message } finally { loading.value = false } }
-async function openRecord(item) { selected.value = await api.task(item.id); reports.value = await api.reports(item.id) }
-async function generate(format) { await api.generateReport(selected.value.id, format); reports.value = await api.reports(selected.value.id) }
+async function openRecord(item) {
+  artifactNotice.value = null
+  selected.value = await api.task(item.id)
+  reports.value = await api.reports(item.id)
+}
+async function generate(format) {
+  generatingFormat.value = format
+  artifactNotice.value = null
+  try {
+    await api.generateReport(selected.value.id, format)
+    reports.value = await api.reports(selected.value.id)
+    artifactNotice.value = { tone: 'success', title: '报告生成完成', message: `${format.toUpperCase()} 制品已写入本地报告目录。` }
+  } catch (reason) {
+    artifactNotice.value = { tone: 'danger', title: '报告生成失败', message: reason.message || '无法生成报告，请稍后重试。' }
+  } finally {
+    generatingFormat.value = ''
+  }
+}
 function downloadUrl(id) { return reportDownloadUrl(id) }
 function statusLabel(value) { return ({ queued: '排队中', running: '运行中', stopping: '停止中', completed: '已完成', failed: '失败', cancelled: '已停止', interrupted: '已中断' })[value] || value }
 function planName(item) { return item.payload && item.payload.plan ? item.payload.plan.plan_type : '未知计划' }
