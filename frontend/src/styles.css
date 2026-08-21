@@ -118,6 +118,31 @@ input:focus, select:focus, textarea:focus { border-color: var(--teal); box-shado
 .stage-row { display: grid; grid-template-columns: 30px 1.4fr .65fr .65fr 34px; gap: 8px; align-items: end; padding: 10px; border: 1px solid var(--line); background: #f5f9f9; }
 .stage-number { align-self: center; color: var(--teal); font: 12px Consolas, monospace; }
 .check-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.validation-console { display: grid; gap: 14px; margin-top: 4px; padding: 16px; border: 1px solid #88a6a9; border-top: 4px solid var(--teal); background: #f6fbfb; }
+.validation-console-head { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
+.validation-console-head div { display: grid; gap: 3px; }
+.validation-console-head span, .validation-console footer span { color: var(--teal); font: 700 9px Consolas, 'Courier New', monospace; letter-spacing: .14em; }
+.validation-console-head h3 { margin: 0; color: var(--navy); font: 700 17px/1.2 Bahnschrift, 'Segoe UI Semibold', 'Microsoft YaHei', sans-serif; }
+.validation-console-head > strong { padding: 5px 8px; background: var(--navy); color: #dff3f3; font: 700 11px Consolas, 'Courier New', monospace; }
+.validation-intro { margin: -4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.validation-basic-grid, .validation-advanced-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.validation-switch { grid-template-columns: auto 1fr; align-items: center; gap: 9px; min-height: 64px; padding: 10px 11px; border: 1px solid var(--line); background: #fff; cursor: pointer; }
+.validation-switch.active { border-color: var(--teal); box-shadow: inset 4px 0 0 var(--teal); background: var(--teal-soft); }
+.validation-switch input, .inline-check input { width: 16px; min-height: 16px; accent-color: var(--teal); }
+.validation-switch span { display: grid; gap: 3px; }
+.validation-switch strong { color: var(--navy); }
+.validation-switch small { color: var(--muted); font-weight: 500; line-height: 1.4; }
+.token-gate { display: grid; grid-template-columns: minmax(120px, .8fr) minmax(110px, 1fr) auto minmax(110px, 1fr); gap: 9px; align-items: end; padding: 11px; border: 1px solid var(--line); background: #edf4f4; }
+.token-gate > span { align-self: center; color: var(--navy); font-weight: 750; }
+.token-gate > i { align-self: center; color: var(--muted); font-style: normal; }
+.validation-advanced { border: 1px solid var(--line); background: #fff; }
+.validation-advanced summary { padding: 11px 13px; color: var(--navy); font-weight: 750; cursor: pointer; }
+.validation-advanced[open] summary { border-bottom: 1px solid var(--line); background: #edf4f4; }
+.validation-advanced-grid { padding: 13px; }
+.validation-wide { grid-column: 1 / -1; }
+.inline-check { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.validation-console footer { display: flex; justify-content: space-between; gap: 14px; padding-top: 10px; border-top: 1px dashed var(--line-strong); }
+.validation-console footer small { color: var(--muted); text-align: right; }
 .check-option { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 7px 9px; border: 1px solid var(--line); background: #fff; font-weight: 500; }
 .safety-readout { display: grid; grid-template-columns: 1fr auto; align-items: end; padding: 15px; border-left: 4px solid var(--teal); background: var(--navy); color: #fff; }
 .safety-readout span { color: #a9c2c6; font-size: 12px; }.safety-readout strong { grid-row: 1 / span 2; grid-column: 2; font: 700 30px Consolas, monospace; }.safety-readout small { color: #d7e4e5; }
@@ -247,6 +272,13 @@ input:focus, select:focus, textarea:focus { border-color: var(--teal); box-shado
   .load-lane small { grid-column: 3; }
   .aggregate-load { grid-template-columns: 1fr; }
   .aggregate-load strong { grid-column: 1; grid-row: auto; }
+  .validation-basic-grid, .validation-advanced-grid { grid-template-columns: 1fr; }
+  .validation-wide { grid-column: 1; }
+  .token-gate { grid-template-columns: 1fr 1fr; }
+  .token-gate > span { grid-column: 1 / -1; }
+  .token-gate > i { display: none; }
+  .validation-console footer { align-items: flex-start; flex-direction: column; }
+  .validation-console footer small { text-align: left; }
 }
 
 /* 模型比较记录：以实验台账对齐各模型负载、状态和原始指标。 */

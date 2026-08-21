@@ -172,6 +172,75 @@
           <label>冷却（秒）<input v-model.number="form.plan.cooldown_seconds" type="number" min="0"></label>
           <label>输出 Token<input v-model.number="form.workload.output_size" type="number" min="1" max="32768"></label>
         </div>
+
+        <section class="validation-console" aria-labelledby="response-validation-title">
+          <header class="validation-console-head">
+            <div>
+              <span>RESPONSE / GATE</span>
+              <h3 id="response-validation-title">
+                响应内容验收
+              </h3>
+            </div>
+            <strong>{{ assertions.length }} 项规则</strong>
+          </header>
+          <p class="validation-intro">
+            传输成功不等于内容有效。断言只影响有效响应率和断言通过率，不会改写 HTTP 成功状态。
+          </p>
+
+          <div class="validation-basic-grid">
+            <label class="validation-switch" :class="{ active: form.validation.non_empty }">
+              <input v-model="form.validation.non_empty" type="checkbox">
+              <span><strong>非空响应</strong><small>过滤空白内容，建议始终启用</small></span>
+            </label>
+            <label>完成原因
+              <select v-model="form.validation.finish_reason">
+                <option value="">不限制</option>
+                <option value="stop">必须正常结束（stop）</option>
+                <option value="stop_or_length">允许 stop / length</option>
+              </select>
+            </label>
+            <label>必须包含
+              <input v-model="form.validation.contains" maxlength="500" placeholder="留空则不检查，例如：ready">
+            </label>
+            <label class="validation-switch" :class="{ active: form.validation.json_parse }">
+              <input v-model="form.validation.json_parse" type="checkbox">
+              <span><strong>JSON 可解析</strong><small>要求响应正文为合法 JSON</small></span>
+            </label>
+          </div>
+
+          <div class="token-gate">
+            <span>输出 Token 区间</span>
+            <label>下限<input v-model.number="form.validation.token_min" type="number" min="0" step="1" placeholder="不限"></label>
+            <i>—</i>
+            <label>上限<input v-model.number="form.validation.token_max" type="number" min="0" step="1" placeholder="不限"></label>
+          </div>
+
+          <details class="validation-advanced">
+            <summary>高级断言：精确匹配、正则、JSON Schema 与响应字段</summary>
+            <div class="validation-advanced-grid">
+              <label>精确匹配
+                <input v-model="form.validation.exact" maxlength="1000" placeholder="响应去除首尾空白后必须完全一致">
+              </label>
+              <label>正则表达式
+                <input v-model="form.validation.regex" maxlength="1000" placeholder="例如：^result:\\s+ok$">
+                <span class="inline-check"><input v-model="form.validation.regex_ignore_case" type="checkbox">忽略大小写</span>
+              </label>
+              <label class="validation-wide">JSON Schema
+                <textarea v-model="form.validation.json_schema" rows="5" spellcheck="false" :placeholder="jsonSchemaPlaceholder"></textarea>
+              </label>
+              <label>响应字段路径
+                <input v-model.trim="form.validation.response_field_path" maxlength="300" placeholder="例如：data.answer 或 items.0.id">
+              </label>
+              <label>字段期望值
+                <input v-model="form.validation.response_field_equals" maxlength="1000" placeholder="留空仅检查存在；支持 JSON 值">
+              </label>
+            </div>
+          </details>
+          <p v-if="validationIssue" class="field-error" role="alert">
+            {{ validationIssue }}
+          </p>
+          <footer><span>ASSERTION SNAPSHOT</span><small>规则会随任务固化，模型比较中的所有目标复用同一组规则。</small></footer>
+        </section>
       </section>
 
       <aside class="panel preflight-panel">
@@ -229,6 +298,7 @@ const availableFormats = [
   { value: 'events.jsonl.gz', label: '时间序列' }, { value: 'html', label: '离线 HTML' },
   { value: 'xlsx', label: 'XLSX' }, { value: 'csv', label: 'CSV' }
 ]
+const jsonSchemaPlaceholder = '{"type":"object","required":["answer"]}'
 const form = reactive({
   name: `性能实验-${new Date().toISOString().slice(0, 16).replace('T', '-')}`,
   execution_mode: 'single',
@@ -241,6 +311,20 @@ const form = reactive({
   },
   plan: { plan_type: 'fixed_concurrency', concurrency: 4, total_requests: 40, warmup_seconds: 2, cooldown_seconds: 1, stages: [] },
   workload: { output_size: 128, dataset_id: '' },
+  validation: {
+    non_empty: true,
+    contains: '',
+    finish_reason: '',
+    token_min: '',
+    token_max: '',
+    json_parse: false,
+    exact: '',
+    regex: '',
+    regex_ignore_case: false,
+    json_schema: '',
+    response_field_path: '',
+    response_field_equals: ''
+  },
   stream: true,
   formats: ['json', 'jsonl.gz', 'events.jsonl.gz', 'html'],
   risk_confirmed: false
@@ -255,7 +339,13 @@ const comparisonIssue = computed(() => {
   if (new Set(selectedTargetIds.value).size !== selectedTargetIds.value.length) return '同一 API 配置不能重复加入比较。'
   return ''
 })
-const canConfigure = computed(() => isComparison.value ? !comparisonIssue.value : Boolean(form.api_config_id))
+const assertionState = computed(() => buildAssertions())
+const assertions = computed(() => assertionState.value.items)
+const validationIssue = computed(() => assertionState.value.issue)
+const canConfigure = computed(() => {
+  const connectionReady = isComparison.value ? !comparisonIssue.value : Boolean(form.api_config_id)
+  return connectionReady && !validationIssue.value
+})
 const canSubmit = computed(() => canConfigure.value && form.formats.length > 0 && (!isSynchronous.value || form.comparison.confirm_synchronous))
 const executionLabel = computed(() => isComparison.value ? `${form.comparison.targets.length} 模型对比` : '单模型测试')
 const submitLabel = computed(() => isComparison.value ? '创建模型比较任务' : '加入本地任务队列')
@@ -301,6 +391,7 @@ const preflightFingerprint = computed(() => JSON.stringify({
   comparison_mode: form.comparison.mode,
   plan: form.plan,
   workload: form.workload,
+  validation: form.validation,
   risk_confirmed: form.risk_confirmed
 }))
 
@@ -336,11 +427,59 @@ function normalisePlan() {
 }
 function addStage() { form.plan.stages.push({ name: `阶段 ${form.plan.stages.length + 1}`, concurrency: 1, requests: 10 }) }
 function removeStage(index) { if (form.plan.stages.length > 1) form.plan.stages.splice(index, 1) }
+function buildAssertions() {
+  const items = []
+  if (form.validation.non_empty) items.push({ type: 'non_empty' })
+  if (form.validation.contains.trim()) items.push({ type: 'contains', value: form.validation.contains })
+  if (form.validation.finish_reason === 'stop') items.push({ type: 'finish_reason', value: ['stop'] })
+  if (form.validation.finish_reason === 'stop_or_length') items.push({ type: 'finish_reason', value: ['stop', 'length'] })
+  if (form.validation.json_parse) items.push({ type: 'json_parse' })
+  if (form.validation.exact.length) items.push({ type: 'exact', value: form.validation.exact, options: { strip: true } })
+  if (form.validation.regex.trim()) {
+    items.push({ type: 'regex', value: form.validation.regex, options: { ignore_case: form.validation.regex_ignore_case } })
+  }
+
+  const minimum = form.validation.token_min
+  const maximum = form.validation.token_max
+  if (minimum !== '' || maximum !== '') {
+    const minValue = minimum === '' ? null : Number(minimum)
+    const maxValue = maximum === '' ? null : Number(maximum)
+    if ((minValue !== null && (!Number.isInteger(minValue) || minValue < 0)) || (maxValue !== null && (!Number.isInteger(maxValue) || maxValue < 0))) {
+      return { items, issue: '输出 Token 上下限必须是大于等于 0 的整数。' }
+    }
+    if (minValue !== null && maxValue !== null && minValue > maxValue) return { items, issue: '输出 Token 下限不能大于上限。' }
+    items.push({ type: 'token_range', options: { min: minValue, max: maxValue } })
+  }
+
+  const schemaSource = form.validation.json_schema.trim()
+  if (schemaSource) {
+    try {
+      items.push({ type: 'json_schema', value: JSON.parse(schemaSource) })
+    } catch (error) {
+      return { items, issue: `JSON Schema 不是合法 JSON：${error.message}` }
+    }
+  }
+
+  const fieldPath = form.validation.response_field_path.trim()
+  if (fieldPath) {
+    const options = { path: fieldPath }
+    const expected = form.validation.response_field_equals.trim()
+    if (expected) options.equals = parseExpectedValue(expected)
+    items.push({ type: 'response_field', options })
+  } else if (form.validation.response_field_equals.trim()) {
+    return { items, issue: '配置字段期望值前，请先填写响应字段路径。' }
+  }
+  return { items, issue: '' }
+}
+function parseExpectedValue(value) {
+  try { return JSON.parse(value) } catch (error) { return value }
+}
 function commonPayload() {
   return {
     name: form.name,
     plan: { ...form.plan },
     workload: { ...form.workload, dataset_id: form.workload.dataset_id || undefined },
+    assertions: assertions.value,
     stream: form.stream,
     formats: form.formats,
     risk_confirmed: form.risk_confirmed
