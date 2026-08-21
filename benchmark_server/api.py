@@ -155,6 +155,12 @@ class AssertionInput(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
+class ThresholdRuleInput(BaseModel):
+    metric: str = Field(min_length=1, max_length=128)
+    operator: Literal["<=", ">=", "<", ">", "=="]
+    value: float
+
+
 class TaskInput(BaseModel):
     name: str = Field(default="benchmark", min_length=1, max_length=128)
     api_config_id: str | None = None
@@ -162,6 +168,7 @@ class TaskInput(BaseModel):
     plan: dict[str, Any]
     workload: dict[str, Any] = Field(default_factory=dict)
     assertions: list[AssertionInput] = Field(default_factory=list, max_length=50)
+    threshold_id: str | None = Field(default=None, min_length=1, max_length=64)
     stream: bool = True
     formats: list[Literal["json", "jsonl.gz", "events.jsonl.gz", "html", "xlsx", "csv"]] = Field(default_factory=lambda: ["json", "jsonl.gz"])
     priority: int = Field(default=0, ge=-100, le=100)
@@ -176,7 +183,7 @@ class TaskInput(BaseModel):
 
 class ThresholdInput(BaseModel):
     name: str = Field(min_length=1, max_length=128)
-    rules: list[dict[str, Any]] = Field(min_length=1)
+    rules: list[ThresholdRuleInput] = Field(min_length=1, max_length=50)
 
 
 class BaselineInput(BaseModel):
@@ -216,6 +223,7 @@ class ComparisonInput(BaseModel):
     plan: dict[str, Any] | None = None
     workload: dict[str, Any] = Field(default_factory=dict)
     assertions: list[AssertionInput] = Field(default_factory=list, max_length=50)
+    threshold_id: str | None = Field(default=None, min_length=1, max_length=64)
     stream: bool = True
     formats: list[Literal["json", "jsonl.gz", "events.jsonl.gz", "html", "xlsx", "csv"]] = Field(
         default_factory=lambda: ["json", "jsonl.gz"]
@@ -448,8 +456,25 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         repository.set_setting("ui", redact(value))
         return repository.get_setting("ui", {})
 
+    def threshold_snapshot(threshold_id: str | None) -> dict[str, Any] | None:
+        if not threshold_id:
+            return None
+        try:
+            threshold = repository.get_threshold(threshold_id)
+            rules = [ThresholdRuleInput.model_validate(rule).model_dump() for rule in threshold["rules"]]
+        except KeyError:
+            raise HTTPException(422, "阈值模板不存在")
+        except ValueError:
+            raise HTTPException(422, "阈值模板内容无效，请在测试资源中修正后重试")
+        return {
+            "template_id": threshold["id"],
+            "name": threshold["name"],
+            "rules": rules,
+        }
+
     @app.post("/api/plans/preflight")
     def preflight(value: TaskInput, user: str = Depends(current_user)):
+        threshold_snapshot(value.threshold_id)
         plan = _plan(value.plan)
         request_config = RequestConfig(
             messages=[{"role": "user", "content": "preflight"}],
@@ -469,8 +494,11 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         }
 
     def prepare_task_payload(value: TaskInput) -> dict[str, Any]:
-        payload = value.model_dump(exclude={"priority", "risk_confirmed"})
+        payload = value.model_dump(exclude={"priority", "risk_confirmed", "threshold_id"})
         payload["workload"] = {"seed": 1, **payload.get("workload", {})}
+        selected_threshold = threshold_snapshot(value.threshold_id)
+        if selected_threshold:
+            payload["thresholds"] = selected_threshold
         config_id = value.api_config_id
         if config_id:
             try:
@@ -601,13 +629,13 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 
     @app.post("/api/thresholds", status_code=201)
     def create_threshold(value: ThresholdInput, user: str = Depends(current_user)):
-        item_id = repository.save_threshold(value.name, value.rules)
+        item_id = repository.save_threshold(value.name, [rule.model_dump() for rule in value.rules])
         return repository.get_threshold(item_id)
 
     @app.put("/api/thresholds/{item_id}")
     def update_threshold(item_id: str, value: ThresholdInput, user: str = Depends(current_user)):
         get_threshold(item_id, user)
-        repository.save_threshold(value.name, value.rules, item_id)
+        repository.save_threshold(value.name, [rule.model_dump() for rule in value.rules], item_id)
         return repository.get_threshold(item_id)
 
     @app.delete("/api/thresholds/{item_id}", status_code=204)
@@ -691,6 +719,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     def comparison_preflight(value: ComparisonInput, user: str = Depends(current_user)):
         if not value.targets or value.plan is None:
             raise HTTPException(422, "模型比较预检必须提供 targets 和 plan")
+        threshold_snapshot(value.threshold_id)
         for target in value.targets:
             if target.api_config_id:
                 try:
@@ -765,6 +794,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 plan=plan_data,
                 workload=workload,
                 assertions=value.assertions,
+                threshold_id=value.threshold_id,
                 stream=value.stream,
                 formats=value.formats,
                 priority=value.priority,

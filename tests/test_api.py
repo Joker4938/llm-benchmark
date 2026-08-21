@@ -300,6 +300,43 @@ class TaskApiTests(ApiTestCase):
         self.assertEqual(422, invalid.status_code, invalid.text)
         self.assertEqual('validation_error', invalid.json()['error']['code'])
 
+    def test_task_snapshots_selected_threshold_template(self):
+        created_threshold = self.client.post('/api/thresholds', json={
+            'name': '交付门槛',
+            'rules': [
+                {'metric': 'latency.p95', 'operator': '<=', 'value': 2},
+                {'metric': 'error_rate', 'operator': '<=', 'value': 0.01},
+            ],
+        })
+        self.assertEqual(201, created_threshold.status_code, created_threshold.text)
+        threshold_id = created_threshold.json()['id']
+
+        created_task = self.client.post(
+            '/api/tasks', json=self.valid_task(threshold_id=threshold_id),
+        )
+
+        self.assertEqual(202, created_task.status_code, created_task.text)
+        snapshot = created_task.json()['payload']['thresholds']
+        self.assertEqual(threshold_id, snapshot['template_id'])
+        self.assertEqual('交付门槛', snapshot['name'])
+        self.assertEqual(2, len(snapshot['rules']))
+        self.assertNotIn('threshold_id', created_task.json()['payload'])
+
+        updated = self.client.put(f'/api/thresholds/{threshold_id}', json={
+            'name': '已调整门槛',
+            'rules': [{'metric': 'achieved_qps', 'operator': '>=', 'value': 10}],
+        })
+        self.assertEqual(200, updated.status_code, updated.text)
+        persisted = self.repository.get_task(created_task.json()['id'])['payload']['thresholds']
+        self.assertEqual('交付门槛', persisted['name'])
+        self.assertEqual('latency.p95', persisted['rules'][0]['metric'])
+
+        missing = self.client.post(
+            '/api/plans/preflight', json=self.valid_task(threshold_id='missing-template'),
+        )
+        self.assertEqual(422, missing.status_code, missing.text)
+        self.assertIn('阈值模板不存在', missing.text)
+
     def test_sse_last_event_id_resume_and_polling_fallback(self):
         task_id = self.repository.create_task('events', {})
         self.repository.append_events(task_id, [
@@ -453,6 +490,10 @@ class ReportAndDiagnosticApiTests(ApiTestCase):
         self.assertNotIn(self.settings.session_secret, text)
 
     def test_sequential_comparison_creates_tasks_with_same_workload_snapshot(self):
+        threshold = self.client.post('/api/thresholds', json={
+            'name': '比较门槛',
+            'rules': [{'metric': 'latency.p95', 'operator': '<=', 'value': 1.5}],
+        }).json()
         payload = {
             'name': '模型顺序比较',
             'mode': 'sequential',
@@ -483,6 +524,7 @@ class ReportAndDiagnosticApiTests(ApiTestCase):
             },
             'workload': {'prompt_type': 'structured', 'output_size': 64, 'seed': 19},
             'assertions': [{'type': 'non_empty'}],
+            'threshold_id': threshold['id'],
             'formats': ['json'],
         }
 
@@ -503,6 +545,10 @@ class ReportAndDiagnosticApiTests(ApiTestCase):
         self.assertEqual(
             [[{'type': 'non_empty', 'value': None, 'options': {}}]] * 2,
             [task['payload']['assertions'] for task in tasks],
+        )
+        self.assertEqual(
+            [threshold['id'], threshold['id']],
+            [task['payload']['thresholds']['template_id'] for task in tasks],
         )
         self.assertNotIn('secret-a', created.text)
         self.assertNotIn('secret-b', created.text)
