@@ -9,6 +9,8 @@ BACKUPS_DIR="$SCRIPT_DIR/backups"
 CHECKSUM_FILE=${LLM_BENCHMARK_CHECKSUM_FILE:-"$SCRIPT_DIR/checksums.sha256"}
 HEALTH_TIMEOUT=${LLM_BENCHMARK_HEALTH_TIMEOUT:-120}
 STOP_TIMEOUT=${LLM_BENCHMARK_STOP_TIMEOUT:-30}
+RESTORE_UID=10001
+RESTORE_GID=10001
 
 ROLLBACK_ARMED=false
 ROLLBACK_RUNNING=false
@@ -175,6 +177,8 @@ restore_data_volume() {
     --network none \
     --entrypoint python \
     --env "BACKUP_FILE=$BACKUP_ARCHIVE" \
+    --env "RESTORE_UID=$RESTORE_UID" \
+    --env "RESTORE_GID=$RESTORE_GID" \
     --volume "$VOLUME_NAME:/data" \
     --volume "$BACKUP_DIR:/backup:ro" \
     "$ROLLBACK_IMAGE" \
@@ -186,7 +190,11 @@ for child in root.iterdir():
     else:
         child.unlink()
 with tarfile.open("/backup/" + os.environ["BACKUP_FILE"], "r:gz") as archive:
-    archive.extractall(root, filter="data")'
+    archive.extractall(root, filter="data")
+uid = int(os.environ["RESTORE_UID"])
+gid = int(os.environ["RESTORE_GID"])
+for path in [root, *root.rglob("*")]:
+    os.chown(path, uid, gid, follow_symlinks=False)'
 }
 
 run_migration() {
