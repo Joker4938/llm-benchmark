@@ -41,7 +41,6 @@ benchmark_result*.json
 
 # 当前生产镜像不包含旧实现、设计过程或开发文档
 backend/
-webui.py
 openspec/
 docs/
 .github/

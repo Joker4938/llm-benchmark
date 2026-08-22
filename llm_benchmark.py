@@ -1,7 +1,7 @@
 """旧版单轮压测入口的兼容包装。
 
 新代码应优先使用 ``python -m benchmark_cli run``。本模块保留原有
-``run_benchmark`` 异步函数及命令行参数，供旧 Flask/Streamlit 调用方平滑迁移。
+``run_benchmark`` 异步函数及命令行参数，供仍使用旧脚本或 Python API 的本地调用方平滑迁移。
 """
 
 from __future__ import annotations
