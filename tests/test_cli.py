@@ -12,6 +12,7 @@ from benchmark_cli.main import (
     build_parser,
     execute_compare,
     execute_run,
+    _auto_stop_policy,
 )
 from benchmark_core import CancellationToken, RequestSample, TimingMetrics, TokenSource, TokenUsage
 
@@ -67,6 +68,33 @@ class CliParserTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             build_parser().parse_args(['compare', '--target', 'a|http://x/v1|m'])
 
+    def test_auto_stop_policy_supports_all_cli_dimensions(self):
+        args = parse_run(
+            '--max-error-rate', '0.1',
+            '--max-p95-latency', '2.5',
+            '--max-queue-backlog', '100',
+            '--max-queue-growth', '20',
+            '--max-cpu-percent', '90',
+            '--max-memory-mb', '2048',
+            '--max-event-loop-lag', '0.5',
+            '--stop-windows', '4',
+            '--stop-minimum-samples', '12',
+            '--stop-window-seconds', '3',
+        )
+
+        policy = _auto_stop_policy(args, {})
+
+        self.assertEqual(0.1, policy.max_error_rate)
+        self.assertEqual(2.5, policy.max_p95_latency)
+        self.assertEqual(100, policy.max_queue_backlog)
+        self.assertEqual(20, policy.max_queue_growth)
+        self.assertEqual(90, policy.max_cpu_percent)
+        self.assertEqual(2048, policy.max_memory_mb)
+        self.assertEqual(0.5, policy.max_event_loop_lag)
+        self.assertEqual(4, policy.consecutive_windows)
+        self.assertEqual(12, policy.minimum_samples)
+        self.assertEqual(3, policy.window_seconds)
+
 
 class CliExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_generates_reports_and_threshold_exit_code(self):
@@ -87,6 +115,24 @@ class CliExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(2, len(payload['artifacts']))
             for artifact in payload['artifacts']:
                 self.assertTrue((Path(directory) / artifact['path']).exists())
+
+    async def test_auto_stop_records_trigger_without_interrupted_exit(self):
+        with tempfile.TemporaryDirectory() as directory, patch('benchmark_cli.main.OpenAIChatClient', FakeClient):
+            args = parse_run(
+                '--requests', '10',
+                '--output-dir', directory,
+                '--format', 'json',
+                '--max-p95-latency', '0.05',
+                '--stop-windows', '2',
+                '--stop-minimum-samples', '1',
+            )
+
+            code, payload = await execute_run(args, install_signal_handlers=False)
+
+            self.assertEqual(EXIT_OK, code)
+            self.assertEqual(2, payload['completed_requests'])
+            self.assertEqual('p95_latency', payload['stop_trigger']['metric'])
+            self.assertIn('P95 延迟', payload['stopped_reason'])
 
     async def test_pre_cancelled_run_preserves_partial_report(self):
         with tempfile.TemporaryDirectory() as directory, patch('benchmark_cli.main.OpenAIChatClient', FakeClient):

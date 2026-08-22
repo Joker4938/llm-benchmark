@@ -136,7 +136,14 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--risk-confirmed", action="store_true", default=None)
     parser.add_argument("--max-error-rate", type=float)
     parser.add_argument("--max-p95-latency", type=float)
+    parser.add_argument("--max-queue-backlog", type=int)
+    parser.add_argument("--max-queue-growth", type=int)
+    parser.add_argument("--max-cpu-percent", type=float)
+    parser.add_argument("--max-memory-mb", type=float)
+    parser.add_argument("--max-event-loop-lag", type=float)
     parser.add_argument("--stop-windows", type=int)
+    parser.add_argument("--stop-minimum-samples", type=int)
+    parser.add_argument("--stop-window-seconds", type=float)
     parser.add_argument(
         "--format",
         action="append",
@@ -302,6 +309,11 @@ async def execute_run(
                 for item in artifacts
             ],
             "stopped_reason": result.stopped_reason,
+            "stop_trigger": (
+                result.stop_trigger.to_dict()
+                if result.stop_trigger is not None
+                else None
+            ),
         }
     )
     threshold_results = evaluate_thresholds(summary, threshold_rules)
@@ -495,14 +507,52 @@ def _assertions(path):
 
 
 def _auto_stop_policy(args, config) -> AutoStopPolicy | None:
-    max_error = resolve(args.max_error_rate, config, "safety.max_error_rate")
-    max_latency = resolve(args.max_p95_latency, config, "safety.max_p95_latency")
-    if max_error is None and max_latency is None:
+    conditions = {
+        "max_error_rate": _optional_float(
+            resolve(args.max_error_rate, config, "safety.max_error_rate")
+        ),
+        "max_p95_latency": _optional_float(
+            resolve(args.max_p95_latency, config, "safety.max_p95_latency")
+        ),
+        "max_queue_backlog": _optional_int(
+            resolve(args.max_queue_backlog, config, "safety.max_queue_backlog")
+        ),
+        "max_queue_growth": _optional_int(
+            resolve(args.max_queue_growth, config, "safety.max_queue_growth")
+        ),
+        "max_cpu_percent": _optional_float(
+            resolve(args.max_cpu_percent, config, "safety.max_cpu_percent")
+        ),
+        "max_memory_mb": _optional_float(
+            resolve(args.max_memory_mb, config, "safety.max_memory_mb")
+        ),
+        "max_event_loop_lag": _optional_float(
+            resolve(args.max_event_loop_lag, config, "safety.max_event_loop_lag")
+        ),
+    }
+    if all(value is None for value in conditions.values()):
         return None
     return AutoStopPolicy(
-        max_error_rate=_optional_float(max_error),
-        max_p95_latency=_optional_float(max_latency),
-        consecutive_windows=int(resolve(args.stop_windows, config, "safety.stop_windows", 3)),
+        **conditions,
+        consecutive_windows=int(
+            resolve(args.stop_windows, config, "safety.stop_windows", 3)
+        ),
+        minimum_samples=int(
+            resolve(
+                args.stop_minimum_samples,
+                config,
+                "safety.stop_minimum_samples",
+                10,
+            )
+        ),
+        window_seconds=float(
+            resolve(
+                args.stop_window_seconds,
+                config,
+                "safety.stop_window_seconds",
+                1.0,
+            )
+        ),
     )
 
 
