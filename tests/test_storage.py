@@ -253,6 +253,28 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual('cancelled', task['status'])
         self.assertTrue(task['result']['partial'])
 
+    async def test_executor_preserves_automatic_stop_reason(self):
+        task_id = self.repository.create_task('auto-stop', {})
+        claimed = self.repository.claim_next_task('test')
+
+        async def runner(payload, cancellation, event_sink):
+            cancellation.cancel()
+            return {
+                'stopped_reason': '生成器 CPU 持续超过阈值',
+                'stop_trigger': {'metric': 'generator_cpu_percent'},
+            }
+
+        executor = LocalExecutor(self.repository, runner, heartbeat_seconds=0.01)
+        await executor.run_claimed(claimed)
+
+        task = self.repository.get_task(task_id)
+        self.assertEqual('cancelled', task['status'])
+        self.assertEqual('生成器 CPU 持续超过阈值', task['stopped_reason'])
+        self.assertEqual(
+            'generator_cpu_percent',
+            task['result']['stop_trigger']['metric'],
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

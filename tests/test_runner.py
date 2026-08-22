@@ -244,6 +244,47 @@ class BenchmarkTaskRunnerTests(unittest.IsolatedAsyncioTestCase):
                 [item["status"] for item in result["thresholds"]["results"]],
             )
 
+    async def test_auto_stop_policy_is_applied_and_trigger_is_recorded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = Database(root)
+            database.initialize()
+            repository = Repository(database, SecretBox.load(root))
+            runner = BenchmarkTaskRunner(repository, root / "reports")
+            payload = {
+                "task_id": None,
+                "endpoint": {
+                    "base_url": "http://local/v1",
+                    "model": "auto-stop-model",
+                    "api_key": "secret",
+                },
+                "plan": {
+                    "name": "auto-stop",
+                    "plan_type": "fixed_concurrency",
+                    "concurrency": 1,
+                    "total_requests": 10,
+                },
+                "workload": {"output_size": 16},
+                "auto_stop": {
+                    "max_p95_latency": 0.05,
+                    "minimum_samples": 1,
+                    "consecutive_windows": 2,
+                },
+                "formats": ["json"],
+            }
+            events = []
+
+            async def sink(event):
+                events.append(event)
+
+            with patch("benchmark_server.runner.OpenAIChatClient", FakeOpenAIClient):
+                result = await runner(payload, CancellationToken(), sink)
+
+            self.assertEqual(2, result["completed_requests"])
+            self.assertEqual("p95_latency", result["stop_trigger"]["metric"])
+            self.assertIn("P95 延迟", result["stopped_reason"])
+            self.assertTrue(any(event.event_type == "automatic_stop" for event in events))
+
     async def test_configured_assertions_are_applied_and_recorded(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

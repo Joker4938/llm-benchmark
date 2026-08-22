@@ -94,13 +94,22 @@ class LocalExecutor:
             payload.setdefault("task_id", task["id"])
             result = await self.runner(payload, cancellation, event_sink)
             await flush()
-            stopped = cancellation.cancelled or self.shutdown.cancelled
+            automatic_reason = result.get("stopped_reason")
+            stopped = bool(automatic_reason) or cancellation.cancelled or self.shutdown.cancelled
+            if automatic_reason:
+                stopped_reason = str(automatic_reason)
+            elif self.shutdown.cancelled:
+                stopped_reason = "executor shutdown"
+            elif cancellation.cancelled:
+                stopped_reason = "user requested stop"
+            else:
+                stopped_reason = None
             self.repository.finish_task(
                 str(task["id"]),
                 claim_token,
                 status="cancelled" if stopped else "completed",
                 result=redact(result),
-                stopped_reason="user requested stop" if stopped else None,
+                stopped_reason=stopped_reason,
             )
         except asyncio.CancelledError:
             cancellation.cancel()

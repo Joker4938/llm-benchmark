@@ -161,6 +161,36 @@ class ThresholdRuleInput(BaseModel):
     value: float
 
 
+class AutoStopInput(BaseModel):
+    """持续窗口自动停止配置；至少启用一项安全阈值。"""
+
+    max_error_rate: float | None = Field(default=None, ge=0, le=1)
+    max_p95_latency: float | None = Field(default=None, ge=0)
+    max_queue_backlog: int | None = Field(default=None, ge=0)
+    max_queue_growth: int | None = Field(default=None, ge=0)
+    max_cpu_percent: float | None = Field(default=None, ge=0)
+    max_memory_mb: float | None = Field(default=None, ge=0)
+    max_event_loop_lag: float | None = Field(default=None, ge=0)
+    consecutive_windows: int = Field(default=3, ge=1)
+    minimum_samples: int = Field(default=10, ge=1)
+    window_seconds: float = Field(default=1.0, gt=0)
+
+    @model_validator(mode="after")
+    def validate_conditions(self) -> "AutoStopInput":
+        conditions = (
+            self.max_error_rate,
+            self.max_p95_latency,
+            self.max_queue_backlog,
+            self.max_queue_growth,
+            self.max_cpu_percent,
+            self.max_memory_mb,
+            self.max_event_loop_lag,
+        )
+        if all(value is None for value in conditions):
+            raise ValueError("至少配置一个自动停止条件")
+        return self
+
+
 class TaskInput(BaseModel):
     name: str = Field(default="benchmark", min_length=1, max_length=128)
     api_config_id: str | None = None
@@ -169,6 +199,7 @@ class TaskInput(BaseModel):
     workload: dict[str, Any] = Field(default_factory=dict)
     assertions: list[AssertionInput] = Field(default_factory=list, max_length=50)
     threshold_id: str | None = Field(default=None, min_length=1, max_length=64)
+    auto_stop: AutoStopInput | None = None
     stream: bool = True
     formats: list[Literal["json", "jsonl.gz", "events.jsonl.gz", "html", "xlsx", "csv"]] = Field(default_factory=lambda: ["json", "jsonl.gz"])
     priority: int = Field(default=0, ge=-100, le=100)
@@ -224,6 +255,7 @@ class ComparisonInput(BaseModel):
     workload: dict[str, Any] = Field(default_factory=dict)
     assertions: list[AssertionInput] = Field(default_factory=list, max_length=50)
     threshold_id: str | None = Field(default=None, min_length=1, max_length=64)
+    auto_stop: AutoStopInput | None = None
     stream: bool = True
     formats: list[Literal["json", "jsonl.gz", "events.jsonl.gz", "html", "xlsx", "csv"]] = Field(
         default_factory=lambda: ["json", "jsonl.gz"]
@@ -795,6 +827,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 workload=workload,
                 assertions=value.assertions,
                 threshold_id=value.threshold_id,
+                auto_stop=value.auto_stop,
                 stream=value.stream,
                 formats=value.formats,
                 priority=value.priority,

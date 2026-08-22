@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable, Mapping, Sequence
 from benchmark_core import (
     AssertionSpec,
     AssertionType,
+    AutoStopPolicy,
     BenchmarkPlan,
     BenchmarkScheduler,
     CancellationToken,
@@ -193,6 +194,8 @@ class BenchmarkTaskRunner:
             )
             for item in assertion_payload
         )
+        auto_stop_data = payload.get("auto_stop")
+        auto_stop = AutoStopPolicy(**dict(auto_stop_data)) if auto_stop_data else None
 
         async with OpenAIChatClient(endpoint, max_connections=max(10, plan.concurrency + 10)) as client:
             async def execute(request: RequestConfig, request_id: str, started: float):
@@ -200,7 +203,8 @@ class BenchmarkTaskRunner:
                 return apply_validation(sample, assertions)[0]
 
             result = await BenchmarkScheduler(execute).run(
-                plan, requests, cancellation=cancellation, event_sink=event_sink
+                plan, requests, cancellation=cancellation, event_sink=event_sink,
+                auto_stop=auto_stop,
             )
         run_id = uuid.uuid4().hex
         summary = build_summary(run_id, plan, result.samples, result.elapsed)
@@ -239,6 +243,11 @@ class BenchmarkTaskRunner:
                 for item in artifacts
             ],
             "stopped_reason": result.stopped_reason,
+            "stop_trigger": (
+                result.stop_trigger.to_dict()
+                if result.stop_trigger is not None
+                else None
+            ),
             **build_web_result_details(result.samples, windows),
         })
         if threshold_evaluation:

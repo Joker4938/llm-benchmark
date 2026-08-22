@@ -337,6 +337,34 @@ class TaskApiTests(ApiTestCase):
         self.assertEqual(422, missing.status_code, missing.text)
         self.assertIn('阈值模板不存在', missing.text)
 
+    def test_task_validates_and_persists_auto_stop_policy(self):
+        auto_stop = {
+            'max_error_rate': 0.1,
+            'max_p95_latency': 2.0,
+            'max_queue_backlog': 100,
+            'max_queue_growth': 20,
+            'max_cpu_percent': 90,
+            'max_memory_mb': 2048,
+            'max_event_loop_lag': 0.5,
+            'consecutive_windows': 3,
+            'minimum_samples': 10,
+            'window_seconds': 2,
+        }
+
+        created = self.client.post(
+            '/api/tasks', json=self.valid_task(auto_stop=auto_stop),
+        )
+
+        self.assertEqual(202, created.status_code, created.text)
+        self.assertEqual(auto_stop, created.json()['payload']['auto_stop'])
+
+        invalid = self.client.post(
+            '/api/tasks',
+            json=self.valid_task(auto_stop={'consecutive_windows': 3}),
+        )
+        self.assertEqual(422, invalid.status_code, invalid.text)
+        self.assertIn('至少配置一个自动停止条件', invalid.text)
+
     def test_sse_last_event_id_resume_and_polling_fallback(self):
         task_id = self.repository.create_task('events', {})
         self.repository.append_events(task_id, [
