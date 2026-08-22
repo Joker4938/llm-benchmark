@@ -6,6 +6,7 @@ export default defineConfig({
   base: './',
   build: {
     target: ['chrome80', 'firefox78'],
+    modulePreload: { polyfill: true },
     cssTarget: ['chrome80', 'firefox78'],
     sourcemap: false,
     assetsInlineLimit: 4096
