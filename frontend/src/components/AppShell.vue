@@ -53,7 +53,8 @@ const navigation = [
   { to: '/runs', code: '02', label: '运行监控' },
   { to: '/history', code: '03', label: '测试记录' },
   { to: '/resources', code: '04', label: '测试资源' },
-  { to: '/settings', code: '05', label: '设置诊断' }
+  { to: '/settings', code: '05', label: '设置诊断' },
+  { to: '/browser-acceptance', code: '06', label: '浏览器验收' }
 ]
 
 async function signOut() {

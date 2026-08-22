@@ -56,6 +56,9 @@
         <p class="form-help">
           目标：Windows 7 上 Chrome 109 / Firefox 115 ESR。IE 不在支持范围内。
         </p>
+        <RouterLink class="secondary-button compatibility-action" to="/browser-acceptance">
+          打开浏览器验收记录
+        </RouterLink>
       </section>
     </div>
   </AppShell>
