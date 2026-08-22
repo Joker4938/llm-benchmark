@@ -8,9 +8,11 @@ version = "0.2.0"
 description = "Offline OpenAI-compatible API benchmark toolkit"
 requires-python = ">=3.10"
 dependencies = [
-  "httpx>=0.27,<1",
-  "openai>=1.35,<2",
   "fastapi>=0.115,<1",
+  "httpx>=0.27,<1",
+  "jsonschema>=4.22,<5",
+  "openai>=1.35,<3",
+  "openpyxl>=3.1,<4",
   "uvicorn>=0.30,<1",
 ]
 
@@ -25,7 +27,7 @@ test = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["benchmark_core*", "benchmark_cli*"]
+include = ["benchmark_core*", "benchmark_cli*", "benchmark_server*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

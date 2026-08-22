@@ -1,7 +1,7 @@
-numpy>=2.0.0
-openai>=1.35.0
-rich>=13.7.1
-plotly>=5.18.0
-pandas>=2.2.0
-openpyxl>=3.1.0
-jsonschema>=4.22,<5
+# 生产运行时直接依赖；精确的传递依赖版本见 requirements.lock。
+fastapi==0.136.1
+httpx==0.28.1
+jsonschema==4.25.0
+openai==2.33.0
+openpyxl==3.1.2
+uvicorn==0.46.0
