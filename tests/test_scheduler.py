@@ -1,8 +1,24 @@
 import asyncio
 import unittest
 
-from benchmark_core.models import BenchmarkPlan, PlanType, RequestConfig, RequestSample, TimingMetrics, TokenUsage, StageConfig
-from benchmark_core.scheduler import AutoStopPolicy, BenchmarkScheduler, CancellationToken, SafetyLimits, validate_plan
+from benchmark_core.models import (
+    BenchmarkPlan,
+    PlanType,
+    RequestConfig,
+    RequestSample,
+    StageConfig,
+    TimingMetrics,
+    TokenUsage,
+)
+from benchmark_core.scheduler import (
+    AutoStopEvaluator,
+    AutoStopPolicy,
+    AutoStopWindow,
+    BenchmarkScheduler,
+    CancellationToken,
+    SafetyLimits,
+    validate_plan,
+)
 
 
 def config():
@@ -31,6 +47,16 @@ class FakeExecutor:
         )
 
 
+class SequenceExecutor(FakeExecutor):
+    def __init__(self, outcomes, delay=0):
+        super().__init__(delay=delay)
+        self.outcomes = list(outcomes)
+
+    async def __call__(self, request, request_id, started):
+        self.success = self.outcomes[min(self.calls, len(self.outcomes) - 1)]
+        return await super().__call__(request, request_id, started)
+
+
 class SafetyTests(unittest.TestCase):
     def test_hard_limit_rejected(self):
         plan = BenchmarkPlan("x", PlanType.FIXED_CONCURRENCY, concurrency=11, total_requests=1)
@@ -41,7 +67,15 @@ class SafetyTests(unittest.TestCase):
         plan = BenchmarkPlan("x", PlanType.FIXED_CONCURRENCY, concurrency=5, total_requests=1)
         with self.assertRaises(PermissionError):
             validate_plan(plan, [config()], SafetyLimits(risk_concurrency=2))
-        self.assertEqual(["高并发"], validate_plan(plan, [config()], SafetyLimits(risk_concurrency=2), risk_confirmed=True))
+        self.assertEqual(
+            ["高并发"],
+            validate_plan(
+                plan,
+                [config()],
+                SafetyLimits(risk_concurrency=2),
+                risk_confirmed=True,
+            ),
+        )
 
 
 class SchedulerTests(unittest.IsolatedAsyncioTestCase):
@@ -94,6 +128,41 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(result.stopped_reason)
         self.assertTrue(any(event.event_type == "automatic_stop" for event in result.events))
 
+    async def test_single_error_spike_does_not_stop_the_run(self):
+        executor = SequenceExecutor([False, False, True, True, True, True])
+        result = await BenchmarkScheduler(executor).run(
+            BenchmarkPlan("load", PlanType.FIXED_CONCURRENCY, concurrency=1, total_requests=6),
+            [config()],
+            auto_stop=AutoStopPolicy(
+                max_error_rate=0.5,
+                minimum_samples=2,
+                consecutive_windows=2,
+            ),
+        )
+        self.assertEqual(6, len(result.samples))
+        self.assertIsNone(result.stop_trigger)
+
+    async def test_queue_backlog_sustained_windows_stop_new_arrivals(self):
+        result = await BenchmarkScheduler(FakeExecutor(delay=0.02)).run(
+            BenchmarkPlan(
+                "rate",
+                PlanType.CONSTANT_RATE,
+                concurrency=1,
+                total_requests=100,
+                target_qps=1000,
+            ),
+            [config()],
+            auto_stop=AutoStopPolicy(
+                max_queue_backlog=2,
+                consecutive_windows=2,
+                window_seconds=0.005,
+            ),
+        )
+        self.assertLess(len(result.samples), 100)
+        self.assertEqual("queue_backlog", result.stop_trigger.metric)
+        event = next(item for item in result.events if item.event_type == "automatic_stop")
+        self.assertEqual("queue_backlog", event.payload["condition"]["metric"])
+
     async def test_pre_cancelled_token_runs_no_requests(self):
         token = CancellationToken()
         token.cancel()
@@ -101,6 +170,44 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
             BenchmarkPlan("load", PlanType.FIXED_CONCURRENCY, total_requests=5), [config()], cancellation=token
         )
         self.assertEqual(0, len(result.samples))
+
+
+class AutoStopEvaluatorTests(unittest.TestCase):
+    def test_different_rule_spikes_do_not_share_a_streak(self):
+        evaluator = AutoStopEvaluator(
+            AutoStopPolicy(
+                max_cpu_percent=80,
+                max_memory_mb=100,
+                consecutive_windows=2,
+            )
+        )
+
+        first = evaluator.evaluate(
+            AutoStopWindow(0, "runtime", generator_cpu_percent=90, generator_memory_mb=50)
+        )
+        second = evaluator.evaluate(
+            AutoStopWindow(1, "runtime", generator_cpu_percent=70, generator_memory_mb=120)
+        )
+        third = evaluator.evaluate(
+            AutoStopWindow(2, "runtime", generator_cpu_percent=70, generator_memory_mb=120)
+        )
+
+        self.assertIsNone(first.trigger)
+        self.assertIsNone(second.trigger)
+        self.assertEqual("generator_memory_mb", third.trigger.metric)
+        self.assertEqual(2, third.trigger.consecutive_windows)
+
+    def test_event_loop_lag_records_observed_and_threshold_values(self):
+        evaluator = AutoStopEvaluator(
+            AutoStopPolicy(max_event_loop_lag=0.1, consecutive_windows=1)
+        )
+        evaluation = evaluator.evaluate(
+            AutoStopWindow(0, "runtime", event_loop_lag=0.25)
+        )
+
+        self.assertEqual("event_loop_lag", evaluation.trigger.metric)
+        self.assertEqual(0.25, evaluation.trigger.observed)
+        self.assertEqual(0.1, evaluation.trigger.threshold)
 
 
 if __name__ == "__main__":

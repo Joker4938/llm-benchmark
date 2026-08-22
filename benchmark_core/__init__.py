@@ -48,7 +48,16 @@ __all__ = [
 ]
 
 from .validation import AssertionSpec, AssertionType, ValidationResult, apply_validation, validate_sample
-from .workloads import Dataset, WorkloadDimensions, WorkloadRecord, WorkloadSnapshot, builtin_dataset, custom_dataset, load_jsonl, sample_records
+from .workloads import (
+    Dataset,
+    WorkloadDimensions,
+    WorkloadRecord,
+    WorkloadSnapshot,
+    builtin_dataset,
+    custom_dataset,
+    load_jsonl,
+    sample_records,
+)
 
 __all__ += [
     "AssertionSpec", "AssertionType", "ValidationResult", "apply_validation", "validate_sample",
@@ -56,8 +65,34 @@ __all__ += [
     "builtin_dataset", "custom_dataset", "load_jsonl", "sample_records",
 ]
 
-from .scheduler import AutoStopPolicy, BenchmarkScheduler, CancellationToken, RunResult, SafetyLimits, validate_plan
-__all__ += ["AutoStopPolicy", "BenchmarkScheduler", "CancellationToken", "RunResult", "SafetyLimits", "validate_plan"]
+from .scheduler import (
+    AutoStopEvaluation,
+    AutoStopEvaluator,
+    AutoStopPolicy,
+    AutoStopTrigger,
+    AutoStopWindow,
+    BenchmarkScheduler,
+    CancellationToken,
+    GeneratorResourceUsage,
+    ProcessResourceProbe,
+    RunResult,
+    SafetyLimits,
+    validate_plan,
+)
+__all__ += [
+    "AutoStopEvaluation",
+    "AutoStopEvaluator",
+    "AutoStopPolicy",
+    "AutoStopTrigger",
+    "AutoStopWindow",
+    "BenchmarkScheduler",
+    "CancellationToken",
+    "GeneratorResourceUsage",
+    "ProcessResourceProbe",
+    "RunResult",
+    "SafetyLimits",
+    "validate_plan",
+]
 
 from .windows import TimeWindowMetrics, aggregate_time_windows
 __all__ += ["TimeWindowMetrics", "aggregate_time_windows"]
