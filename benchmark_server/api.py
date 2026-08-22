@@ -15,6 +15,7 @@ import shutil
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
@@ -47,6 +48,7 @@ LOGGER = logging.getLogger("llm_benchmark.api")
 COOKIE_NAME = "llm_benchmark_session"
 TERMINAL_STATES = {"completed", "failed", "cancelled", "interrupted"}
 REPORT_FORMATS = {"json", "html", "csv", "xlsx", "jsonl.gz", "events.jsonl.gz"}
+EXECUTOR_HEARTBEAT_STALE_SECONDS = 15
 
 
 @dataclass(frozen=True, slots=True)
@@ -909,13 +911,28 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             with database.connect() as connection:
                 connection.execute("SELECT 1").fetchone()
             writable = os.access(settings.data_dir, os.W_OK)
-            status_value = "ready" if writable else "degraded"
+            executor = _executor_readiness(database)
+            is_ready = writable and executor["status"] == "ok"
             return JSONResponse(
-                {"status": status_value, "database": "ok", "data_dir_writable": writable, "configuration": "ok"},
-                status_code=200 if writable else 503,
+                {
+                    "status": "ready" if is_ready else "degraded",
+                    "database": "ok",
+                    "data_dir_writable": writable,
+                    "executor": executor,
+                    "configuration": "ok",
+                },
+                status_code=200 if is_ready else 503,
             )
         except Exception:
-            return JSONResponse({"status": "not_ready", "database": "error", "configuration": "ok"}, status_code=503)
+            return JSONResponse(
+                {
+                    "status": "not_ready",
+                    "database": "error",
+                    "executor": {"status": "unknown"},
+                    "configuration": "ok",
+                },
+                status_code=503,
+            )
 
     @app.get("/api/diagnostics")
     def diagnostics(user: str = Depends(current_user)):
@@ -1092,6 +1109,32 @@ def _comparison_metadata(
             "target_qps": target_qps * multiplier if target_qps is not None else None,
         },
         "warning": warning,
+    }
+
+
+def _executor_readiness(database: Database) -> dict[str, Any]:
+    """根据本地 executor 最近一次心跳判断任务执行能力是否就绪。"""
+
+    with database.connect() as connection:
+        row = connection.execute(
+            "SELECT pid, heartbeat_at FROM executor_state WHERE name='local-executor'"
+        ).fetchone()
+    if row is None or not row["heartbeat_at"]:
+        return {"status": "missing"}
+    try:
+        heartbeat_at = datetime.fromisoformat(str(row["heartbeat_at"]))
+        if heartbeat_at.tzinfo is None:
+            heartbeat_at = heartbeat_at.replace(tzinfo=timezone.utc)
+        age_seconds = max(0.0, (datetime.now(timezone.utc) - heartbeat_at).total_seconds())
+    except (TypeError, ValueError):
+        return {"status": "invalid", "heartbeat_at": str(row["heartbeat_at"])}
+    status_value = "ok" if age_seconds <= EXECUTOR_HEARTBEAT_STALE_SECONDS else "stale"
+    return {
+        "status": status_value,
+        "pid": row["pid"],
+        "heartbeat_at": heartbeat_at.isoformat(),
+        "age_seconds": round(age_seconds, 3),
+        "max_age_seconds": EXECUTOR_HEARTBEAT_STALE_SECONDS,
     }
 
 

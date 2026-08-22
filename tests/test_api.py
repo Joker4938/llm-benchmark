@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from benchmark_server.api import AppSettings, COOKIE_NAME, create_app
 from benchmark_server.auth import SessionSigner
+from benchmark_server.database import utc_now
 
 
 class ApiTestCase(unittest.TestCase):
@@ -505,9 +506,29 @@ class ReportAndDiagnosticApiTests(ApiTestCase):
         )
 
     def test_readiness_and_diagnostics_are_offline_and_secret_free(self):
+        missing = self.client.get('/health/ready')
+        self.assertEqual(503, missing.status_code)
+        self.assertEqual('missing', missing.json()['executor']['status'])
+
+        with self.database.transaction(immediate=True) as connection:
+            connection.execute(
+                "INSERT INTO executor_state(name,pid,heartbeat_at,metadata_json) VALUES(?,?,?,'{}')",
+                ('local-executor', 1234, utc_now()),
+            )
         ready = self.client.get('/health/ready')
         self.assertEqual(200, ready.status_code)
         self.assertEqual('ok', ready.json()['configuration'])
+        self.assertEqual('ok', ready.json()['executor']['status'])
+
+        with self.database.transaction(immediate=True) as connection:
+            connection.execute(
+                "UPDATE executor_state SET heartbeat_at=? WHERE name='local-executor'",
+                ('2000-01-01T00:00:00+00:00',),
+            )
+        stale = self.client.get('/health/ready')
+        self.assertEqual(503, stale.status_code)
+        self.assertEqual('stale', stale.json()['executor']['status'])
+
         diagnostics = self.client.get('/api/diagnostics')
         self.assertEqual(200, diagnostics.status_code)
         body = diagnostics.json()
