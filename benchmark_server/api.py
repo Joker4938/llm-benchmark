@@ -302,7 +302,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         or Path(__file__).resolve().parents[1] / "frontend" / "dist"
     ).resolve()
     signer = SessionSigner(settings.session_secret, settings.session_hours * 3600)
-    app = FastAPI(title="LLM Benchmark", version="0.2.0", docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="LLM Benchmark", version="0.1.0", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.repository = repository
     app.state.database = database
     app.state.settings = settings
