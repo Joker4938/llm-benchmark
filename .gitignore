@@ -173,6 +173,8 @@ cython_debug/
 # custom
 output/
 benchmark_result*.json
+/.playwright-cli/
+/llm-benchmark.tar
 
 .idea/
 
