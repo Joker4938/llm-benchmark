@@ -55,7 +55,10 @@ The default scheduler allows one benchmark task at a time. Model comparisons run
 
 ## Conventions
 
-- Follow the repository `AGENTS.md` and active OpenSpec change.
+- 用户显式要求优先于以下项目约定。
+- `AGENTS.md` 是协作、分支、提交和注释规范的唯一完整来源；不要在本文件重复这些规则。
+- 涉及功能、行为或接口变更时，先检查并遵循适用的 active OpenSpec change。
+- 运行方式、架构与入口以 `README.md` 和当前代码为准；不要根据历史实现推断新的运行方式。
 - Keep commits focused and validate each small closure before committing.
 - Run CodeGraph first when `.codegraph/` exists and code location or call paths need investigation.
 - Use Chinese for user-facing UI and documentation unless a protocol field requires English.

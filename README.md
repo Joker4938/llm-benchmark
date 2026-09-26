@@ -269,7 +269,7 @@ pnpm run build
 Python 全量测试：
 
 ```bash
-python3 -m unittest discover -s tests -v
+python -m pytest -q
 ```
 
 前端静态检查和构建：
@@ -332,6 +332,7 @@ update.sh              备份、更新、健康检查和失败自动回滚
 
 ## 文档
 
+- [贡献与开发规范](AGENTS.md)
 - [CLI 使用说明](docs/CLI使用说明.md)
 - [完全离线部署说明](docs/离线部署说明.md)
 - [系统架构说明](docs/架构说明.md)

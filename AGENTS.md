@@ -32,16 +32,31 @@ docker compose down                  # 优雅停止
 
 生产入口要求设置 `LLM_BENCHMARK_USER`、`LLM_BENCHMARK_PASSWORD` 和 `LLM_BENCHMARK_SESSION_SECRET`。验证 FastAPI 托管的静态页面前，应重新执行前端构建。
 
-## 分支与提交规范
+## 分支、提交与注释规范
 
-- `master` 为稳定分支，不直接在其上开发；开始工作前基于最新 `master` 创建短生命周期分支。
-- 分支名采用小写英文和连字符：`feature/report-export`、`fix/proxy-port`、`docs/contributor-guide`。
-- 提交信息保持简短、祈使句式，沿用 `feat:`、`fix:`、`add:`、`update:`、`docs:`、`refactor:` 等前缀，例如：`fix: 修复并发任务状态更新`。
-- 每个提交只处理一个主题，不混入格式化、生成文件或无关修改。
+### 分支
+
+- `master` 为稳定集成分支，不直接在其上开发；开始工作前从最新 `master` 创建短生命周期分支。
+- 分支名采用 `<type>/<short-kebab-case-topic>`，例如 `feature/report-export`、`fix/proxy-port`、`docs/contributor-guide`。允许的类型为 `feature`、`fix`、`hotfix`、`refactor`、`docs` 和 `chore`。
+- 一个分支只承载一个主要目标；范围或对应 OpenSpec 变更已变化时，创建新分支，不复用原分支承载无关工作。
+- 完成评审并合并后删除分支；放弃的分支应关闭或删除，不保留作新工作的起点。
+
+### 提交
+
+- 提交信息保持简短、祈使句式。主交付提交与分支类型对应：`feature/*` 使用 `feat:`，`fix/*` 与 `hotfix/*` 使用 `fix:`，其余分别使用 `refactor:`、`docs:`、`chore:`。
+- 与主目标直接相关的测试、文档或整理提交可以使用对应前缀；不得改变分支的主要语义。
+- 每个提交只处理一个主题，不混入格式化、生成文件或无关修改，例如：`fix: 修复并发任务状态更新`。
+
+### 注释
+
+- 注释和 docstring 仅解释命名、类型和代码结构无法表达的原因、约束、不变量、兼容性、安全性、并发性或运维风险。
+- 不逐行复述代码，不保留注释掉的代码，不用注释掩盖含糊命名、过长函数或职责混杂。
+- Python 公共函数、类、CLI/API 边界只在调用者需要了解签名之外的契约时提供简短 docstring，例如重要前置条件、副作用、异常、幂等性或一致性要求；私有或局部实现默认不需要。
+- Vue 组件的公开 props、emits、slots 和 composable 只在状态所有权、事件时序、异步取消、兼容性或调用约束不明显时添加注释；不解释直观模板、普通响应式变量或显而易见的事件绑定。
 
 ## 代码规范
 
-- Python 使用 4 空格缩进并遵循 PEP 8；函数和变量使用 `snake_case`，常量使用 `UPPER_CASE`。公共函数及复杂逻辑需提供简短、准确的 docstring。
+- Python 使用 4 空格缩进并遵循 PEP 8；函数和变量使用 `snake_case`，常量使用 `UPPER_CASE`。docstring 遵循上方注释规范。
 - Vue/JavaScript 使用 2 空格缩进、单引号和无分号风格；组件文件使用 PascalCase；变量、props 和方法使用 camelCase。
 - API 字段命名保持与现有接口一致。新增接口需校验输入、返回明确 HTTP 状态码，并避免在日志或响应中暴露 API Key、会话密钥等敏感信息。
 - 用户界面和提示信息默认使用中文。避免无关重构，保持函数职责单一，并复用现有 API 封装与组件。
