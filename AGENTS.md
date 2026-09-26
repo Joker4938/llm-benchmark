@@ -36,10 +36,11 @@ docker compose down                  # 优雅停止
 
 ### 分支
 
-- `master` 为稳定集成分支，不直接在其上开发；开始工作前从最新 `master` 创建短生命周期分支。
+- `master` 为稳定发布分支，禁止直接在其上开发或提交；仅在发版时接收已验收的 `develop` 合并。
+- `develop` 为日常集成分支。开始工作前先同步最新 `develop`，所有短生命周期工作分支都必须从 `develop` 创建，不得从 `master` 创建。
 - 分支名采用 `<type>/<short-kebab-case-topic>`，例如 `feature/report-export`、`fix/proxy-port`、`docs/contributor-guide`。允许的类型为 `feature`、`fix`、`hotfix`、`refactor`、`docs` 和 `chore`。
 - 一个分支只承载一个主要目标；范围或对应 OpenSpec 变更已变化时，创建新分支，不复用原分支承载无关工作。
-- 完成评审并合并后删除分支；放弃的分支应关闭或删除，不保留作新工作的起点。
+- 工作分支完成评审后合并回 `develop`；发布时将 `develop` 合并到 `master` 并创建版本标签。合并后删除工作分支；放弃的分支应关闭或删除，不保留作新工作的起点。
 
 ### 提交
 
@@ -68,7 +69,7 @@ Python 自动化测试位于 `tests/test_*.py`，使用 pytest。每次修改至
 
 ## Pull Request 要求
 
-PR 应说明变更目的、主要实现和兼容性影响，列出已执行的验证命令，并关联对应 Issue 或 OpenSpec 变更。界面修改需附截图。不得提交 `.env`、凭据、`.venv/`、`node_modules/`、`frontend/dist/`、`data/`、`reports/`、本地归档或其他生成文件。
+工作分支的 PR 以 `develop` 为目标分支；发版 PR 从 `develop` 合并到 `master`。PR 应说明变更目的、主要实现和兼容性影响，列出已执行的验证命令，并关联对应 Issue 或 OpenSpec 变更。界面修改需附截图。不得提交 `.env`、凭据、`.venv/`、`node_modules/`、`frontend/dist/`、`data/`、`reports/`、本地归档或其他生成文件。
 
 ## Agent 专用说明
 
